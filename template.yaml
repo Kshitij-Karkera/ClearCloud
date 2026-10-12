@@ -1,0 +1,72 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: ClearCloud - serverless AWS cost-waste scanner and dashboard
+
+Parameters:
+  LabRoleArn:
+    Type: String
+    Description: >
+      ARN of an existing IAM role the functions will run as. In AWS Academy this is
+      the pre-made LabRole (arn:aws:iam::<account-id>:role/LabRole) because student
+      accounts cannot create IAM roles.
+  Regions:
+    Type: String
+    Default: us-east-1
+    Description: Comma-separated regions to scan
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 60
+    MemorySize: 256
+
+Resources:
+  ReportsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: clearcloud-reports
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+
+  ScannerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: clearcloud-scanner
+      CodeUri: src/scanner/
+      Handler: app.lambda_handler
+      Role: !Ref LabRoleArn
+      Timeout: 120
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref ReportsTable
+          REGIONS: !Ref Regions
+      Events:
+        DailyScan:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 day)
+
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: clearcloud-api
+      CodeUri: src/api/
+      Handler: app.lambda_handler
+      Role: !Ref LabRoleArn
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref ReportsTable
+      FunctionUrlConfig:
+        AuthType: NONE
+
+Outputs:
+  DashboardUrl:
+    Description: Open this URL to see the dashboard
+    Value: !GetAtt ApiFunctionUrl.FunctionUrl
+  ScannerFunctionName:
+    Value: !Ref ScannerFunction
