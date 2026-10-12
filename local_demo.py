@@ -1,4 +1,3 @@
-import rules
 import datetime
 import json
 import os
@@ -45,6 +44,8 @@ def sample_inventory():
 
 
 def build_sample_report():
+    import rules
+
     findings = rules.analyze(sample_inventory())
     return {
         "scanned_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),

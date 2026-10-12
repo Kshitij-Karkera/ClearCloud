@@ -1,13 +1,19 @@
-from providers import aws, azure, gcp
-import rules
 import os
 import sys
 import unittest
 from types import SimpleNamespace as NS
 
-sys.path.insert(0, os.path.join(
-    os.path.dirname(__file__), "..", "src", "scanner"))
 
+def _load_modules():
+    sys.path.insert(0, os.path.join(
+        os.path.dirname(__file__), "..", "src", "scanner"))
+    import rules
+    from providers import aws, azure, gcp
+
+    return rules, aws, azure, gcp
+
+
+rules, aws, azure, gcp = _load_modules()
 
 class RulesTest(unittest.TestCase):
     def test_unattached_disk_priced_per_provider(self):
