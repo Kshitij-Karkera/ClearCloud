@@ -1,4 +1,3 @@
-import rules
 import datetime
 import json
 import os
@@ -7,6 +6,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "src", "scanner"))
+
+import rules
 
 REGION = "us-east-1"
 
