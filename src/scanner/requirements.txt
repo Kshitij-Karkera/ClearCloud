@@ -1,0 +1,7 @@
+azure-identity
+azure-mgmt-compute
+azure-mgmt-network
+azure-mgmt-monitor
+google-auth
+google-cloud-compute
+google-cloud-monitoring
