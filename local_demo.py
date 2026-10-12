@@ -1,3 +1,4 @@
+import rules
 import datetime
 import json
 import os
@@ -7,45 +8,48 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "src", "scanner"))
 
-import rules
 
-REGION = "us-east-1"
+def sample_inventory():
+    return {
+        "disks": [
+            {"provider": "aws", "id": "vol-0a1b2c3d4e5f60001", "region": "us-east-1",
+                "size_gb": 100, "disk_type": "gp2", "attached": False},
+            {"provider": "aws", "id": "vol-0a1b2c3d4e5f60003", "region": "us-east-1",
+                "size_gb": 50, "disk_type": "gp3", "attached": True},
+            {"provider": "azure", "id": "old-data-disk", "region": "eastus",
+                "size_gb": 256, "disk_type": "Premium_LRS", "attached": False},
+            {"provider": "gcp", "id": "scratch-disk-1", "region": "us-central1-a",
+                "size_gb": 200, "disk_type": "pd-ssd", "attached": False},
+        ],
+        "public_ips": [
+            {"provider": "aws", "id": "eipalloc-0123456789abcdef0",
+                "region": "us-east-1", "address": "203.0.113.10", "in_use": False},
+            {"provider": "azure", "id": "unused-static-ip",
+                "region": "eastus", "address": "203.0.113.20", "in_use": False},
+            {"provider": "gcp", "id": "reserved-ip-1", "region": "us-central1",
+                "address": "203.0.113.30", "in_use": False},
+            {"provider": "gcp", "id": "web-ip", "region": "us-central1",
+                "address": "203.0.113.31", "in_use": True},
+        ],
+        "vms": [
+            {"provider": "aws", "id": "i-0123456789abcdef0", "region": "us-east-1",
+                "size": "m5.large", "running": True, "avg_cpu": 1.8},
+            {"provider": "aws", "id": "i-0123456789abcdef1", "region": "us-east-1",
+                "size": "t3.medium", "running": True, "avg_cpu": 42.0},
+            {"provider": "azure", "id": "dev-vm-01", "region": "eastus",
+                "size": "Standard_D2s_v3", "running": True, "avg_cpu": 2.4},
+            {"provider": "gcp", "id": "batch-worker-3", "region": "us-central1-a",
+                "size": "e2-standard-2", "running": True, "avg_cpu": 3.9},
+        ],
+    }
 
 
 def build_sample_report():
-    volumes = [
-        {"VolumeId": "vol-0a1b2c3d4e5f60001", "Size": 100,
-            "VolumeType": "gp2", "State": "available"},
-        {"VolumeId": "vol-0a1b2c3d4e5f60002", "Size": 30,
-            "VolumeType": "gp3", "State": "available"},
-        {"VolumeId": "vol-0a1b2c3d4e5f60003", "Size": 50,
-            "VolumeType": "gp3", "State": "in-use"},
-    ]
-    addresses = [
-        {"PublicIp": "203.0.113.10", "AllocationId": "eipalloc-0123456789abcdef0"},
-        {"PublicIp": "203.0.113.11", "AllocationId": "eipalloc-0123456789abcdef1",
-            "AssociationId": "eipassoc-1"},
-    ]
-    instances = [
-        {"InstanceId": "i-0123456789abcdef0",
-            "InstanceType": "m5.large", "State": "running"},
-        {"InstanceId": "i-0123456789abcdef1",
-            "InstanceType": "t3.medium", "State": "running"},
-        {"InstanceId": "i-0123456789abcdef2",
-            "InstanceType": "t3.small", "State": "running"},
-    ]
-    cpu = {"i-0123456789abcdef0": 1.8,
-           "i-0123456789abcdef1": 42.0, "i-0123456789abcdef2": 3.2}
-
-    findings = []
-    findings += rules.detect_unattached_volumes(volumes, REGION)
-    findings += rules.detect_unassociated_eips(addresses, REGION)
-    findings += rules.detect_idle_instances(instances, cpu, REGION)
-    findings.sort(key=lambda f: f["est_monthly_savings"], reverse=True)
-
+    findings = rules.analyze(sample_inventory())
     return {
         "scanned_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "regions": [REGION],
+        "providers": ["aws", "azure", "gcp"],
+        "scanned": ["aws:us-east-1", "azure", "gcp"],
         "summary": rules.summarize(findings),
         "findings": findings,
         "spend": [
@@ -57,6 +61,7 @@ def build_sample_report():
         "cost_explorer_status": "ok",
         "errors": [],
         "history": [],
+        "demo_note": "Demo mode: all data on this page is simulated sample data for AWS, Azure and GCP.",
     }
 
 
@@ -84,5 +89,6 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8000"))
-    print(f"ClearCloud demo (sample data) at http://localhost:{port}")
+    print(
+        f"ClearCloud demo (simulated multi-cloud data) at http://localhost:{port}")
     HTTPServer(("127.0.0.1", port), Handler).serve_forever()
