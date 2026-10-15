@@ -84,7 +84,7 @@ Python 3.12 (Lambda), plain HTML/CSS/JavaScript (no framework), AWS SAM / CloudF
 ## Project structure
 
 ```
-clearcloud/
+ClearCloud/
 |-- template.yaml                 # the whole AWS stack (SAM)
 |-- local_demo.py                 # run the UI locally with simulated data
 |-- scripts/deploy_frontend.sh    # publishes the site and its config to S3 / CloudFront

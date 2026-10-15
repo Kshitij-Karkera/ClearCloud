@@ -15,8 +15,8 @@ This guide deploys ClearCloud to AWS. It is written for the AWS Academy Learner 
 Either clone the repository:
 
 ```bash
-git clone https://github.com/<your-username>/clearcloud.git
-cd clearcloud
+git clone https://github.com/<your-username>/ClearCloud.git
+cd ClearCloud
 ```
 
 For a private repository, GitHub asks for a username and a personal access token as the password. Alternatively, download the repository as a ZIP from GitHub, upload it through CloudShell's Actions menu, and unzip it.
