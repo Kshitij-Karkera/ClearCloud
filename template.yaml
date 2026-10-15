@@ -1,55 +1,119 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: ClearCloud - serverless AWS cost-waste scanner and dashboard
+Description: ClearCloud - multi-tenant, serverless multi-cloud cost-waste scanner
 
 Parameters:
   LabRoleArn:
     Type: String
     Description: >
-      ARN of an existing IAM role the functions will run as. In AWS Academy this is
-      the pre-made LabRole (arn:aws:iam::<account-id>:role/LabRole) because student
+      ARN of an existing IAM role the functions run as. In AWS Academy this is the
+      pre-made LabRole (arn:aws:iam::<account-id>:role/LabRole) because student
       accounts cannot create IAM roles.
-  Regions:
-    Type: String
-    Default: us-east-1
-    Description: Comma-separated regions to scan
+  ScannerMaxConcurrency:
+    Type: Number
+    Default: 5
+    MinValue: 2
+    MaxValue: 1000
+    Description: Maximum number of scanner Lambdas running at the same time
 
 Globals:
   Function:
     Runtime: python3.12
-    Timeout: 60
+    Timeout: 30
     MemorySize: 256
 
 Resources:
-  ReportsTable:
+  Table:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: clearcloud-reports
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: pk
           AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: kind
+          AttributeType: S
       KeySchema:
         - AttributeName: pk
           KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: kind-index
+          KeySchema:
+            - AttributeName: kind
+              KeyType: HASH
+            - AttributeName: pk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
 
-  ScannerFunction:
-    Type: AWS::Serverless::Function
+  ScanDeadLetterQueue:
+    Type: AWS::SQS::Queue
     Properties:
-      FunctionName: clearcloud-scanner
-      CodeUri: src/scanner/
-      Handler: app.lambda_handler
-      Role: !Ref LabRoleArn
-      Timeout: 120
-      Environment:
-        Variables:
-          TABLE_NAME: !Ref ReportsTable
-          REGIONS: !Ref Regions
-      Events:
-        DailyScan:
-          Type: Schedule
-          Properties:
-            Schedule: rate(1 day)
+      MessageRetentionPeriod: 1209600
+
+  ScanQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 1800
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ScanDeadLetterQueue.Arn
+        maxReceiveCount: 3
+
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub ${AWS::StackName}-users
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      PreventUserExistenceErrors: ENABLED
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+
+  AdminGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      UserPoolId: !Ref UserPool
+      GroupName: admins
+      Description: May scan the AWS account that hosts ClearCloud
+
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      Auth:
+        DefaultAuthorizer: CognitoAuth
+        Authorizers:
+          CognitoAuth:
+            IdentitySource: $request.header.Authorization
+            JwtConfiguration:
+              issuer: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}
+              audience:
+                - !Ref UserPoolClient
 
   ApiFunction:
     Type: AWS::Serverless::Function
@@ -60,13 +124,171 @@ Resources:
       Role: !Ref LabRoleArn
       Environment:
         Variables:
-          TABLE_NAME: !Ref ReportsTable
-      FunctionUrlConfig:
-        AuthType: NONE
+          TABLE_NAME: !Ref Table
+          QUEUE_URL: !Ref ScanQueue
+      Events:
+        GetReport:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /api/report
+            Method: GET
+        ListAccounts:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /api/accounts
+            Method: GET
+        CreateAccount:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /api/accounts
+            Method: POST
+        DeleteAccount:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /api/accounts/{account_id}
+            Method: DELETE
+        RequestScan:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /api/scan
+            Method: POST
+
+  DispatcherFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: clearcloud-dispatcher
+      CodeUri: src/dispatcher/
+      Handler: app.lambda_handler
+      Role: !Ref LabRoleArn
+      Timeout: 60
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref Table
+          QUEUE_URL: !Ref ScanQueue
+      Events:
+        DailyScan:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 day)
+
+  ScannerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: clearcloud-scanner
+      CodeUri: src/scanner/
+      Handler: app.lambda_handler
+      Role: !Ref LabRoleArn
+      Timeout: 300
+      MemorySize: 512
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref Table
+          DEFAULT_AWS_REGION: !Ref AWS::Region
+      Events:
+        ScanMessages:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt ScanQueue.Arn
+            BatchSize: 1
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+            ScalingConfig:
+              MaximumConcurrency: !Ref ScannerMaxConcurrency
+
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  OriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub ${AWS::StackName}-oac
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        PriceClass: PriceClass_100
+        HttpVersion: http2
+        Origins:
+          - Id: site
+            DomainName: !GetAtt FrontendBucket.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+            OriginAccessControlId: !GetAtt OriginAccessControl.Id
+          - Id: api
+            DomainName: !Sub ${HttpApi}.execute-api.${AWS::Region}.amazonaws.com
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+        DefaultCacheBehavior:
+          TargetOriginId: site
+          ViewerProtocolPolicy: redirect-to-https
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          Compress: true
+        CacheBehaviors:
+          - PathPattern: /api/*
+            TargetOriginId: api
+            ViewerProtocolPolicy: https-only
+            AllowedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+              - PUT
+              - POST
+              - PATCH
+              - DELETE
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub ${FrontendBucket.Arn}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}
 
 Outputs:
-  DashboardUrl:
-    Description: Open this URL to see the dashboard
-    Value: !GetAtt ApiFunctionUrl.FunctionUrl
-  ScannerFunctionName:
-    Value: !Ref ScannerFunction
+  SiteUrl:
+    Description: Open this URL to use ClearCloud
+    Value: !Sub https://${Distribution.DomainName}
+  FrontendBucketName:
+    Value: !Ref FrontendBucket
+  DistributionId:
+    Value: !Ref Distribution
+  UserPoolId:
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Value: !Ref UserPoolClient
+  Region:
+    Value: !Ref AWS::Region
+  ScanQueueUrl:
+    Value: !Ref ScanQueue
+  DeadLetterQueueUrl:
+    Value: !Ref ScanDeadLetterQueue
+  DispatcherFunctionName:
+    Value: !Ref DispatcherFunction
