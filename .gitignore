@@ -4,4 +4,4 @@ __pycache__/
 samconfig.toml
 out.json
 .venv/
-.DS_Store
+.DS_Store.vscode/
