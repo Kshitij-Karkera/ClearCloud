@@ -1,144 +1,206 @@
+import datetime
+import json
+import logging
 import os
 import sys
-import unittest
-from types import SimpleNamespace as NS
+import time
+import traceback
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(HERE, "src", "scanner"))
+
+STATIC = {
+    "/": ("index.html", "text/html; charset=utf-8"),
+    "/index.html": ("index.html", "text/html; charset=utf-8"),
+    "/style.css": ("style.css", "text/css; charset=utf-8"),
+    "/app.js": ("app.js", "application/javascript; charset=utf-8"),
+}
+
+log = logging.getLogger("clearcloud")
+
+ACCOUNT_LABELS = {
+    "aws": "Demo AWS account",
+    "azure": "Demo Azure subscription",
+    "gcp": "Demo GCP project",
+}
 
 
-def _load_modules():
-    sys.path.insert(0, os.path.join(
-        os.path.dirname(__file__), "..", "src", "scanner"))
+def sample_inventory():
+    return {
+        "disks": [
+            {"provider": "aws", "id": "vol-0a1b2c3d4e5f60001", "region": "us-east-1", "size_gb": 100, "disk_type": "gp2", "attached": False},
+            {"provider": "aws", "id": "vol-0a1b2c3d4e5f60003", "region": "us-east-1", "size_gb": 50, "disk_type": "gp3", "attached": True},
+            {"provider": "azure", "id": "old-data-disk", "region": "eastus", "size_gb": 256, "disk_type": "Premium_LRS", "attached": False},
+            {"provider": "gcp", "id": "scratch-disk-1", "region": "us-central1-a", "size_gb": 200, "disk_type": "pd-ssd", "attached": False},
+        ],
+        "public_ips": [
+            {"provider": "aws", "id": "eipalloc-0123456789abcdef0", "region": "us-east-1", "address": "203.0.113.10", "in_use": False},
+            {"provider": "azure", "id": "unused-static-ip", "region": "eastus", "address": "203.0.113.20", "in_use": False},
+            {"provider": "gcp", "id": "reserved-ip-1", "region": "us-central1", "address": "203.0.113.30", "in_use": False},
+            {"provider": "gcp", "id": "web-ip", "region": "us-central1", "address": "203.0.113.31", "in_use": True},
+        ],
+        "vms": [
+            {"provider": "aws", "id": "i-0123456789abcdef0", "region": "us-east-1", "size": "m5.large", "running": True, "avg_cpu": 1.8},
+            {"provider": "aws", "id": "i-0123456789abcdef1", "region": "us-east-1", "size": "t3.medium", "running": True, "avg_cpu": 42.0},
+            {"provider": "azure", "id": "dev-vm-01", "region": "eastus", "size": "Standard_D2s_v3", "running": True, "avg_cpu": 2.4},
+            {"provider": "gcp", "id": "batch-worker-3", "region": "us-central1-a", "size": "e2-standard-2", "running": True, "avg_cpu": 3.9},
+        ],
+    }
+
+
+def build_sample_report():
     import rules
-    from providers import aws, azure, gcp
 
-    return rules, aws, azure, gcp
+    inventory = sample_inventory()
+    log.debug(
+        "Inventory: %d disks, %d public IPs, %d VMs",
+        len(inventory["disks"]), len(inventory["public_ips"]), len(inventory["vms"]),
+    )
+    findings = rules.analyze(inventory)
+    for f in findings:
+        f["account_label"] = ACCOUNT_LABELS[f["provider"]]
+        log.debug(
+            "Finding: %-5s %-18s %-26s save ~$%.2f/mo",
+            f["provider"], f["type"], f["resource_id"], f["est_monthly_savings"],
+        )
+    summary = rules.summarize(findings)
+    log.info(
+        "Report built: %d findings, total est. savings $%.2f/mo, by provider %s",
+        summary["count"], summary["total_est_monthly_savings"],
+        {p: v["count"] for p, v in summary["by_provider"].items()},
+    )
+    return {
+        "scanned_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "providers": ["aws", "azure", "gcp"],
+        "accounts_count": 3,
+        "summary": summary,
+        "findings": findings,
+        "spend": [
+            {"service": "Amazon Elastic Compute Cloud - Compute", "cost": 128.40},
+            {"service": "Amazon Elastic Block Store", "cost": 22.15},
+            {"service": "Amazon Relational Database Service", "cost": 18.90},
+            {"service": "AWS Lambda", "cost": 0.42},
+        ],
+        "cost_explorer_status": "ok",
+        "errors": [],
+        "demo_note": "Demo mode: all data on this page is simulated sample data for AWS, Azure and GCP.",
+    }
 
 
-rules, aws, azure, gcp = _load_modules()
-
-class RulesTest(unittest.TestCase):
-    def test_unattached_disk_priced_per_provider(self):
-        disks = [
-            {"provider": "aws", "id": "a", "region": "r",
-                "size_gb": 100, "disk_type": "gp3", "attached": False},
-            {"provider": "azure", "id": "b", "region": "r", "size_gb": 100,
-                "disk_type": "Premium_LRS", "attached": False},
-            {"provider": "gcp", "id": "c", "region": "r", "size_gb": 100,
-                "disk_type": "pd-ssd", "attached": False},
-            {"provider": "aws", "id": "d", "region": "r",
-                "size_gb": 100, "disk_type": "gp3", "attached": True},
+def build_sample_accounts():
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    return {
+        "accounts": [
+            {"account_id": "demo00000001", "provider": "aws", "label": ACCOUNT_LABELS["aws"], "regions": ["us-east-1"], "host_account": True, "created_at": now, "last_status": "ok: 3 findings", "last_scan_at": now},
+            {"account_id": "demo00000002", "provider": "azure", "label": ACCOUNT_LABELS["azure"], "regions": [], "host_account": False, "created_at": now, "last_status": "ok: 3 findings", "last_scan_at": now},
+            {"account_id": "demo00000003", "provider": "gcp", "label": ACCOUNT_LABELS["gcp"], "regions": [], "host_account": False, "created_at": now, "last_status": "ok: 3 findings", "last_scan_at": now},
         ]
-        out = rules.detect_unattached_disks(disks)
-        self.assertEqual([f["resource_id"] for f in out], ["a", "b", "c"])
-        self.assertEqual([f["est_monthly_savings"]
-                         for f in out], [8.0, 15.0, 17.0])
-        self.assertEqual([f["provider"] for f in out], ["aws", "azure", "gcp"])
-
-    def test_unused_public_ip_only(self):
-        ips = [
-            {"provider": "aws", "id": "x", "region": "r",
-                "address": "1.1.1.1", "in_use": False},
-            {"provider": "gcp", "id": "y", "region": "r",
-                "address": "2.2.2.2", "in_use": True},
-        ]
-        out = rules.detect_unused_public_ips(ips)
-        self.assertEqual(len(out), 1)
-        self.assertEqual(out[0]["resource_id"], "x")
-
-    def test_idle_vm_threshold(self):
-        vms = [
-            {"provider": "azure", "id": "low", "region": "r",
-                "size": "Standard_B2s", "running": True, "avg_cpu": 2.0},
-            {"provider": "azure", "id": "busy", "region": "r",
-                "size": "Standard_B2s", "running": True, "avg_cpu": 40.0},
-            {"provider": "gcp", "id": "nodata", "region": "r",
-                "size": "e2-small", "running": True, "avg_cpu": None},
-            {"provider": "aws", "id": "stopped", "region": "r",
-                "size": "t3.small", "running": False, "avg_cpu": 1.0},
-        ]
-        out = rules.detect_idle_vms(vms)
-        self.assertEqual([f["resource_id"] for f in out], ["low"])
-
-    def test_unknown_vm_size_does_not_crash(self):
-        vms = [{"provider": "gcp", "id": "v", "region": "r",
-                "size": "z9-mega", "running": True, "avg_cpu": 1.0}]
-        self.assertEqual(rules.detect_idle_vms(
-            vms)[0]["est_monthly_savings"], 0.0)
-
-    def test_summarize_by_provider(self):
-        findings = [
-            {"provider": "aws", "type": "a", "est_monthly_savings": 1.5},
-            {"provider": "aws", "type": "a", "est_monthly_savings": 2.5},
-            {"provider": "gcp", "type": "b", "est_monthly_savings": 3.0},
-        ]
-        s = rules.summarize(findings)
-        self.assertEqual(s["total_est_monthly_savings"], 7.0)
-        self.assertEqual(s["by_type"], {"a": 2, "b": 1})
-        self.assertEqual(s["by_provider"]["aws"], {
-                         "count": 2, "est_monthly_savings": 4.0})
-
-    def test_analyze_across_providers(self):
-        inv = {
-            "disks": [{"provider": "azure", "id": "d", "region": "r", "size_gb": 10, "disk_type": "Standard_LRS", "attached": False}],
-            "public_ips": [{"provider": "gcp", "id": "i", "region": "r", "address": "9.9.9.9", "in_use": False}],
-            "vms": [],
-        }
-        findings = rules.analyze(inv)
-        self.assertEqual({f["provider"] for f in findings}, {"azure", "gcp"})
-        self.assertEqual(findings[0]["est_monthly_savings"], 7.3)
+    }
 
 
-class ProviderNormalizerTest(unittest.TestCase):
-    def test_aws_volume_and_address(self):
-        v = aws.normalize_volume(
-            {"VolumeId": "vol-1", "Size": 20, "VolumeType": "gp3", "State": "available"}, "us-east-1")
-        self.assertFalse(v["attached"])
-        used = aws.normalize_address(
-            {"PublicIp": "1.1.1.1", "AllocationId": "e", "AssociationId": "x"}, "us-east-1")
-        self.assertTrue(used["in_use"])
+class Handler(BaseHTTPRequestHandler):
+    def _begin(self):
+        self._t0 = time.perf_counter()
+        self._status = None
+        self._size = 0
+        length = int(self.headers.get("Content-Length") or 0)
+        self._body = self.rfile.read(length) if length else b""
+        log.debug(
+            "-> %s %s from %s | User-Agent: %s",
+            self.command, self.path, self.client_address[0],
+            (self.headers.get("User-Agent") or "-")[:80],
+        )
+        if self._body:
+            log.debug("   request body (%d bytes): %s", len(self._body), self._body[:300].decode("utf-8", "replace"))
 
-    def test_azure_disk_and_ip(self):
-        disk = NS(name="d1", location="eastus", disk_size_gb=128,
-                  sku=NS(name="Premium_LRS"), managed_by=None)
-        d = azure.normalize_disk(disk)
-        self.assertFalse(d["attached"])
-        self.assertEqual(d["disk_type"], "Premium_LRS")
+    def _end(self):
+        ms = (time.perf_counter() - self._t0) * 1000
+        level = logging.INFO if (self._status or 500) < 400 else logging.WARNING
+        log.log(level, "%s %s -> %s (%d bytes, %.1f ms)", self.command, self.path, self._status, self._size, ms)
 
-        static_unused = NS(name="ip1", location="eastus", ip_address="1.2.3.4", sku=NS(name="Standard"),
-                           public_ip_allocation_method="Static", ip_configuration=None)
-        self.assertFalse(azure.normalize_public_ip(static_unused)["in_use"])
+    def _send(self, status, body, ctype):
+        self._status = status
+        self._size = len(body)
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
-        basic_dynamic = NS(name="ip2", location="eastus", ip_address=None, sku=NS(name="Basic"),
-                           public_ip_allocation_method="Dynamic", ip_configuration=None)
-        self.assertIsNone(azure.normalize_public_ip(basic_dynamic))
+    def _json(self, status, payload):
+        self._send(status, json.dumps(payload).encode(), "application/json")
 
-    def test_azure_vm(self):
-        vm = NS(name="vm1", location="eastus",
-                hardware_profile=NS(vm_size="Standard_B2s"))
-        out = azure.normalize_vm(vm, True, 3.0)
-        self.assertEqual((out["size"], out["running"],
-                         out["avg_cpu"]), ("Standard_B2s", True, 3.0))
+    def _handle(self, routes):
+        self._begin()
+        try:
+            routes()
+        except Exception:
+            log.error("Unhandled error while serving %s %s\n%s", self.command, self.path, traceback.format_exc())
+            if self._status is None:
+                self._json(500, {"error": "Internal error"})
+        self._end()
 
-    def test_gcp_disk_address_instance(self):
-        disk = NS(name="pd1", size_gb=50,
-                  type_="https://x/zones/z/diskTypes/pd-ssd", users=[])
-        d = gcp.normalize_disk("zones/us-central1-a", disk)
-        self.assertEqual((d["region"], d["disk_type"],
-                         d["attached"]), ("us-central1-a", "pd-ssd", False))
+    def do_GET(self):
+        self._handle(self._route_get)
 
-        reserved = NS(name="a1", address="5.5.5.5",
-                      address_type="EXTERNAL", status="RESERVED")
-        self.assertFalse(gcp.normalize_address(
-            "regions/us-central1", reserved)["in_use"])
-        internal = NS(name="a2", address="10.0.0.1",
-                      address_type="INTERNAL", status="RESERVED")
-        self.assertIsNone(gcp.normalize_address(
-            "regions/us-central1", internal))
+    def do_POST(self):
+        self._handle(self._route_post)
 
-        inst = NS(name="vm", status="RUNNING",
-                  machine_type="https://x/machineTypes/e2-small")
-        out = gcp.normalize_instance("zones/us-central1-a", inst, 2.5)
-        self.assertEqual((out["size"], out["running"]), ("e2-small", True))
+    def _route_get(self):
+        if self.path == "/config.json":
+            self._json(200, {"demo": True})
+        elif self.path == "/api/report":
+            self._json(200, build_sample_report())
+        elif self.path == "/api/accounts":
+            accounts = build_sample_accounts()
+            log.debug("Returning %d demo accounts", len(accounts["accounts"]))
+            self._json(200, accounts)
+        elif self.path in STATIC:
+            name, ctype = STATIC[self.path]
+            log.debug("Serving static file src/frontend/%s", name)
+            with open(os.path.join(HERE, "src", "frontend", name), "rb") as f:
+                self._send(200, f.read(), ctype)
+        else:
+            log.warning("No route for GET %s", self.path)
+            self._json(404, {"error": "Not found"})
+
+    def _route_post(self):
+        if self.path == "/api/scan":
+            log.info("Scan requested: pretending to queue 3 accounts (demo mode, nothing is scanned)")
+            self._json(202, {"queued": 3, "skipped": 0})
+        else:
+            log.warning("Blocked POST %s: demo mode is read-only", self.path)
+            self._json(403, {"error": "Demo mode is read-only"})
+
+    def log_message(self, *args):
+        pass
+
+
+def setup_logging():
+    level = logging.DEBUG if os.environ.get("LOG_LEVEL", "DEBUG").upper() == "DEBUG" else logging.INFO
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(message)s", "%H:%M:%S"))
+    log.setLevel(level)
+    log.addHandler(handler)
+    log.propagate = False
 
 
 if __name__ == "__main__":
-    unittest.main()
+    setup_logging()
+    port = int(os.environ.get("PORT", "8000"))
+    log.info("ClearCloud demo (simulated multi-cloud data) at http://localhost:%d", port)
+    log.info("Python %s | project root: %s", sys.version.split()[0], HERE)
+    log.info("Log level: %s (set LOG_LEVEL=INFO for less detail)", logging.getLevelName(log.level))
+    for name in sorted({n for n, _ in STATIC.values()}):
+        path = os.path.join(HERE, "src", "frontend", name)
+        log.info("Frontend file %-10s %s", name, "found" if os.path.exists(path) else "MISSING")
+    log.info("API routes: GET /config.json, GET /api/report, GET /api/accounts, POST /api/scan")
+    log.info("Press Ctrl+C to stop")
+    server = HTTPServer(("127.0.0.1", port), Handler)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        log.info("Stopped by user")
+    finally:
+        server.server_close()

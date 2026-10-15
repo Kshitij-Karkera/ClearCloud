@@ -36,11 +36,30 @@ def normalize_address(a, region):
     }
 
 
-def collect(region, now, lookback_days=7):
+def make_session(role_arn, external_id, session_name):
     import boto3
 
-    ec2 = boto3.client("ec2", region_name=region)
-    cw = boto3.client("cloudwatch", region_name=region)
+    params = {
+        "RoleArn": role_arn,
+        "RoleSessionName": f"clearcloud-{session_name}"[:64],
+        "DurationSeconds": 900,
+    }
+    if external_id:
+        params["ExternalId"] = external_id
+    creds = boto3.client("sts").assume_role(**params)["Credentials"]
+    return boto3.Session(
+        aws_access_key_id=creds["AccessKeyId"],
+        aws_secret_access_key=creds["SecretAccessKey"],
+        aws_session_token=creds["SessionToken"],
+    )
+
+
+def collect(region, now, lookback_days=7, session=None):
+    import boto3
+
+    session = session or boto3.Session()
+    ec2 = session.client("ec2", region_name=region)
+    cw = session.client("cloudwatch", region_name=region)
 
     disks = []
     for page in ec2.get_paginator("describe_volumes").paginate():
@@ -69,11 +88,12 @@ def collect(region, now, lookback_days=7):
     return {"disks": disks, "public_ips": ips, "vms": vms}
 
 
-def collect_spend(now):
+def collect_spend(now, session=None):
     import boto3
 
+    session = session or boto3.Session()
     try:
-        ce = boto3.client("ce", region_name="us-east-1")
+        ce = session.client("ce", region_name="us-east-1")
         end = now.date()
         start = end - datetime.timedelta(days=30)
         resp = ce.get_cost_and_usage(
