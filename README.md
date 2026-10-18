@@ -72,7 +72,7 @@ CloudFront (CDN, HTTPS)
 
 - **One rule engine for every cloud.** Each provider only has to translate its resources into three small shapes. The rules never see cloud-specific data, so adding a fourth cloud means writing one collector and a price table.
 - **Serverless end to end.** Nothing runs between scans, so the system costs close to nothing at idle and scales out when many accounts are scanned at once.
-- **Queue-based scanning.** SQS decouples "who needs a scan" from "doing the scan". It gives retries and a dead-letter queue for free, and `ScannerMaxConcurrency` protects the account's Lambda limits.
+- **Queue-based scanning.** SQS decouples "who needs a scan" from "doing the scan". It gives retries and a dead-letter queue for free, and `ScannerWorkers` caps how many scanner Lambdas run in parallel. Scanner workers pull accounts from the queue themselves, so the queue works even where Lambda cannot be wired to SQS directly.
 - **Read-only by design.** The tool asks for the least access possible (Reader on Azure, Compute and Monitoring Viewer on GCP, an `ec2:Describe*` style role on AWS), so a leaked credential cannot change infrastructure.
 - **Same-origin API.** CloudFront routes `/api/*` to API Gateway, so the browser talks to a single domain and no CORS configuration is needed.
 - **Failures are isolated.** If one account has bad credentials or a region fails, the others still complete. The failure shows up as a status and warning on the dashboard instead of an outage.
@@ -84,9 +84,10 @@ Python 3.12 (Lambda), plain HTML/CSS/JavaScript (no framework), AWS SAM / CloudF
 ## Project structure
 
 ```
-ClearCloud/
+clearcloud/
 |-- template.yaml                 # the whole AWS stack (SAM)
 |-- local_demo.py                 # run the UI locally with simulated data
+|-- scripts/deploy_backend.sh     # builds and deploys the stack
 |-- scripts/deploy_frontend.sh    # publishes the site and its config to S3 / CloudFront
 |-- docs/DEPLOYMENT.md            # step-by-step deployment guide
 |-- src/
@@ -134,6 +135,7 @@ To deploy to AWS, see **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
 - **Spend charts are AWS-only.** Azure and GCP currently report waste findings, not billing.
 - **Savings are estimates** from built-in approximate US on-demand price tables. They rank findings and are not billing-accurate.
 - **Detection is rule-based**, not machine learning.
+- **Sandbox credentials.** In student sandboxes that cannot create IAM roles, the Lambdas call AWS with temporary session credentials passed in as template parameters. This is for sandbox use only: the credentials expire and are refreshed by re-running `scripts/deploy_backend.sh`. In a normal account, leave those parameters empty and use a proper execution role.
 - **Sessions last about an hour.** There is no silent token refresh yet, so users sign in again after expiry.
 - **CloudFront and the API sit behind HTTPS only**, but there is no custom domain, WAF or alerting yet (see the roadmap).
 

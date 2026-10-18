@@ -6,15 +6,29 @@ Parameters:
   LabRoleArn:
     Type: String
     Description: >
-      ARN of an existing IAM role the functions run as. In AWS Academy this is the
-      pre-made LabRole (arn:aws:iam::<account-id>:role/LabRole) because student
-      accounts cannot create IAM roles.
-  ScannerMaxConcurrency:
+      ARN of an existing IAM role the functions run as. Student sandboxes cannot create
+      IAM roles, so pass a role that already exists and that Lambda can assume.
+  ScannerWorkers:
     Type: Number
-    Default: 5
-    MinValue: 2
-    MaxValue: 1000
-    Description: Maximum number of scanner Lambdas running at the same time
+    Default: 3
+    MinValue: 1
+    MaxValue: 10
+    Description: Maximum number of scanner Lambdas started in parallel for one scan request
+  AwsAccessKeyId:
+    Type: String
+    NoEcho: true
+    Default: ''
+    Description: Optional. Temporary access key the code uses instead of the execution role (sandbox only)
+  AwsSecretAccessKey:
+    Type: String
+    NoEcho: true
+    Default: ''
+    Description: Optional. Matches AwsAccessKeyId
+  AwsSessionToken:
+    Type: String
+    NoEcho: true
+    Default: ''
+    Description: Optional. Matches AwsAccessKeyId
 
 Globals:
   Function:
@@ -126,6 +140,11 @@ Resources:
         Variables:
           TABLE_NAME: !Ref Table
           QUEUE_URL: !Ref ScanQueue
+          SCANNER_FUNCTION: !Ref ScannerFunction
+          MAX_WORKERS: !Ref ScannerWorkers
+          CC_ACCESS_KEY_ID: !Ref AwsAccessKeyId
+          CC_SECRET_ACCESS_KEY: !Ref AwsSecretAccessKey
+          CC_SESSION_TOKEN: !Ref AwsSessionToken
       Events:
         GetReport:
           Type: HttpApi
@@ -170,6 +189,11 @@ Resources:
         Variables:
           TABLE_NAME: !Ref Table
           QUEUE_URL: !Ref ScanQueue
+          SCANNER_FUNCTION: !Ref ScannerFunction
+          MAX_WORKERS: !Ref ScannerWorkers
+          CC_ACCESS_KEY_ID: !Ref AwsAccessKeyId
+          CC_SECRET_ACCESS_KEY: !Ref AwsSecretAccessKey
+          CC_SESSION_TOKEN: !Ref AwsSessionToken
       Events:
         DailyScan:
           Type: Schedule
@@ -188,17 +212,11 @@ Resources:
       Environment:
         Variables:
           TABLE_NAME: !Ref Table
+          QUEUE_URL: !Ref ScanQueue
           DEFAULT_AWS_REGION: !Ref AWS::Region
-      Events:
-        ScanMessages:
-          Type: SQS
-          Properties:
-            Queue: !GetAtt ScanQueue.Arn
-            BatchSize: 1
-            FunctionResponseTypes:
-              - ReportBatchItemFailures
-            ScalingConfig:
-              MaximumConcurrency: !Ref ScannerMaxConcurrency
+          CC_ACCESS_KEY_ID: !Ref AwsAccessKeyId
+          CC_SECRET_ACCESS_KEY: !Ref AwsSecretAccessKey
+          CC_SESSION_TOKEN: !Ref AwsSessionToken
 
   FrontendBucket:
     Type: AWS::S3::Bucket

@@ -15,8 +15,8 @@ This guide deploys ClearCloud to AWS. It is written for the AWS Academy Learner 
 Either clone the repository:
 
 ```bash
-git clone https://github.com/<your-username>/ClearCloud.git
-cd ClearCloud
+git clone https://github.com/<your-username>/clearcloud.git
+cd clearcloud
 ```
 
 For a private repository, GitHub asks for a username and a personal access token as the password. Alternatively, download the repository as a ZIP from GitHub, upload it through CloudShell's Actions menu, and unzip it.
@@ -25,14 +25,23 @@ If `sam` is not installed: `pip install aws-sam-cli`
 
 ## 2. Build and deploy the backend
 
+Find a role the Lambdas can run as. In a Learner Lab it is `LabRole`. In a sandbox without it, list the roles Lambda can assume and pick one:
+
 ```bash
-sam build
-sam deploy --guided \
-  --stack-name clearcloud \
-  --parameter-overrides LabRoleArn=arn:aws:iam::<ACCOUNT_ID>:role/LabRole
+aws iam list-roles --query "Roles[?contains(to_string(AssumeRolePolicyDocument),'lambda.amazonaws.com')].Arn" --output text
 ```
 
-Accept the defaults when prompted. The first build installs the Azure and GCP SDKs and can take a few minutes. If it fails on disk space or time, remove the `azure-*` and `google-*` lines from `src/scanner/requirements.txt` and rebuild; AWS scanning works without them.
+Then build and deploy with the script (replace the ARN with yours):
+
+```bash
+./scripts/deploy_backend.sh clearcloud arn:aws:iam::<ACCOUNT_ID>:role/<ROLE_NAME>
+```
+
+The script reads your current session credentials and passes them to the stack, so the Lambdas can call DynamoDB, SQS, Secrets Manager and the other services even when the execution role only allows logging. **These credentials expire when the session ends.** When scans start failing with `ExpiredToken`, start the lab again and re-run the script. In a normal AWS account, deploy with `sam deploy --guided` instead and leave the credential parameters empty.
+
+Never commit these credentials or show them on screen.
+
+The first build installs the Azure and GCP SDKs and can take a few minutes. If it fails on disk space or time, remove the `azure-*` and `google-*` lines from `src/scanner/requirements.txt` and rebuild; AWS scanning works without them.
 
 The first deployment also creates a CloudFront distribution, which can take 5 to 10 minutes.
 
@@ -142,6 +151,7 @@ Delete them afterwards so they do not use up credits.
 | The site says it is not configured | Run `./scripts/deploy_frontend.sh` to publish `config.json` |
 | Account status shows `error: ...` | Open the account's message: bad credentials, an API not enabled, or a role that cannot be assumed |
 | "Restricted to admins" when adding an AWS account | Add yourself to the `admins` group (step 5) and sign in again |
+| Scans fail with `ExpiredToken` | The sandbox credentials expired; re-run `./scripts/deploy_backend.sh` |
 | Scan never finishes | Check the dead-letter queue (`DeadLetterQueueUrl` output) and the scanner Lambda's CloudWatch logs |
 | Spend chart says unavailable | Cost Explorer is blocked in this account; findings still work |
 | Sign-up code never arrives | Use the CLI commands in step 4 |
