@@ -79,7 +79,7 @@ CloudFront (CDN, HTTPS)
 
 ## Tech stack
 
-Python 3.12 (Lambda), plain HTML/CSS/JavaScript (no framework), AWS SAM / CloudFormation, boto3, the Azure SDK for Python, and the Google Cloud Python SDK.
+Python 3.13 (Lambda), plain HTML/CSS/JavaScript (no framework), AWS SAM / CloudFormation, boto3, the Azure SDK for Python, and the Google Cloud Python SDK.
 
 ## Project structure
 
