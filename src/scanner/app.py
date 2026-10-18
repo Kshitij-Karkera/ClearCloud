@@ -3,13 +3,15 @@ import json
 import os
 import traceback
 
-import boto3
-
+import cc_session
 import reporting
 import rules
 from providers import aws as aws_provider
 
 TABLE_NAME = os.environ.get("TABLE_NAME", "")
+QUEUE_URL = os.environ.get("QUEUE_URL", "")
+MIN_REMAINING_MS = 90000
+RETRY_DELAY_SECONDS = 30
 DEFAULT_AWS_REGION = os.environ.get(
     "DEFAULT_AWS_REGION") or os.environ.get("AWS_REGION", "us-east-1")
 CPU_LOOKBACK_DAYS = int(os.environ.get("CPU_LOOKBACK_DAYS", "7"))
@@ -19,14 +21,20 @@ _clients = {}
 
 def _table():
     if "table" not in _clients:
-        _clients["table"] = boto3.resource("dynamodb").Table(TABLE_NAME)
+        _clients["table"] = cc_session.resource("dynamodb").Table(TABLE_NAME)
     return _clients["table"]
 
 
 def _get_secret(name):
     if "secrets" not in _clients:
-        _clients["secrets"] = boto3.client("secretsmanager")
+        _clients["secrets"] = cc_session.client("secretsmanager")
     return json.loads(_clients["secrets"].get_secret_value(SecretId=name)["SecretString"])
+
+
+def _sqs():
+    if "sqs" not in _clients:
+        _clients["sqs"] = cc_session.client("sqs")
+    return _clients["sqs"]
 
 
 def _merge(target, part):
@@ -115,7 +123,38 @@ def process(message, now):
     _record_status(key, now, f"ok: {len(findings)} findings")
 
 
+def drain(context):
+    sqs = _sqs()
+    processed = 0
+    failed = 0
+    while context.get_remaining_time_in_millis() > MIN_REMAINING_MS:
+        resp = sqs.receive_message(
+            QueueUrl=QUEUE_URL, MaxNumberOfMessages=1, WaitTimeSeconds=2
+        )
+        messages = resp.get("Messages", [])
+        if not messages:
+            break
+        for message in messages:
+            try:
+                now = datetime.datetime.now(datetime.timezone.utc)
+                process(json.loads(message["Body"]), now)
+                sqs.delete_message(QueueUrl=QUEUE_URL,
+                                   ReceiptHandle=message["ReceiptHandle"])
+                processed += 1
+            except Exception:
+                traceback.print_exc()
+                failed += 1
+                sqs.change_message_visibility(
+                    QueueUrl=QUEUE_URL,
+                    ReceiptHandle=message["ReceiptHandle"],
+                    VisibilityTimeout=RETRY_DELAY_SECONDS,
+                )
+    return {"processed": processed, "failed": failed}
+
+
 def lambda_handler(event, context):
+    if event.get("mode") == "drain":
+        return drain(context)
     now = datetime.datetime.now(datetime.timezone.utc)
     failures = []
     for record in event.get("Records", []):

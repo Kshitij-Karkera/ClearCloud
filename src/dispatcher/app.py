@@ -1,6 +1,7 @@
 import json
 import os
 
+import cc_session
 from dispatch_logic import build_entries, chunks
 
 
@@ -21,10 +22,8 @@ def _all_accounts(table):
 
 
 def lambda_handler(event, context):
-    import boto3
-
-    table = boto3.resource("dynamodb").Table(os.environ["TABLE_NAME"])
-    sqs = boto3.client("sqs")
+    table = cc_session.resource("dynamodb").Table(os.environ["TABLE_NAME"])
+    sqs = cc_session.client("sqs")
     queue_url = os.environ["QUEUE_URL"]
 
     accounts = _all_accounts(table)
@@ -37,4 +36,9 @@ def lambda_handler(event, context):
     print(json.dumps({"accounts": len(accounts), "failed": failed}))
     if failed:
         raise RuntimeError(f"{failed} scan messages could not be queued")
-    return {"queued": len(accounts)}
+    workers = cc_session.start_workers(
+        os.environ.get("SCANNER_FUNCTION", ""),
+        cc_session.worker_count(len(accounts), int(
+            os.environ.get("MAX_WORKERS", "3"))),
+    )
+    return {"queued": len(accounts), "workers": workers}

@@ -1,5 +1,7 @@
 import datetime
 
+import cc_session
+
 
 def _avg_cpu(cloudwatch, instance_id, now, lookback_days):
     resp = cloudwatch.get_metric_statistics(
@@ -46,7 +48,7 @@ def make_session(role_arn, external_id, session_name):
     }
     if external_id:
         params["ExternalId"] = external_id
-    creds = boto3.client("sts").assume_role(**params)["Credentials"]
+    creds = cc_session.client("sts").assume_role(**params)["Credentials"]
     return boto3.Session(
         aws_access_key_id=creds["AccessKeyId"],
         aws_secret_access_key=creds["SecretAccessKey"],
@@ -55,9 +57,7 @@ def make_session(role_arn, external_id, session_name):
 
 
 def collect(region, now, lookback_days=7, session=None):
-    import boto3
-
-    session = session or boto3.Session()
+    session = session or cc_session.session()
     ec2 = session.client("ec2", region_name=region)
     cw = session.client("cloudwatch", region_name=region)
 
@@ -89,9 +89,7 @@ def collect(region, now, lookback_days=7, session=None):
 
 
 def collect_spend(now, session=None):
-    import boto3
-
-    session = session or boto3.Session()
+    session = session or cc_session.session()
     try:
         ce = session.client("ce", region_name="us-east-1")
         end = now.date()
