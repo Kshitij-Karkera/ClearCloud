@@ -8,15 +8,17 @@ This guide deploys ClearCloud to AWS. It is written for the AWS Academy Learner 
 - AWS CloudShell (or a machine with the AWS CLI and AWS SAM CLI)
 - Your account ID (shown in the top-right menu of the AWS console)
 
-> **AWS Academy note:** student accounts cannot create IAM roles, so both Lambdas run as the existing **LabRole**. The template takes its ARN as a parameter.
+> **AWS Academy note:** student accounts cannot create IAM roles, so the Lambdas run as an existing role (`LabRole`, or `lambda-run-role` in the sandbox). The template takes its ARN as a parameter.
+
+> **Sandbox note:** the sandbox blocks creating Cognito, API Gateway, SQS and Secrets Manager resources, so this stack uses DynamoDB-backed sign-in, a Lambda Function URL, SNS and SSM Parameter Store instead (see the README).
 
 ## 1. Get the code into CloudShell
 
 Either clone the repository:
 
 ```bash
-git clone https://github.com/<your-username>/clearcloud.git
-cd clearcloud
+git clone https://github.com/<your-username>/ClearCloud.git
+cd ClearCloud
 ```
 
 For a private repository, GitHub asks for a username and a personal access token as the password. Alternatively, download the repository as a ZIP from GitHub, upload it through CloudShell's Actions menu, and unzip it.
@@ -31,13 +33,15 @@ Find a role the Lambdas can run as. In a Learner Lab it is `LabRole`. In a sandb
 aws iam list-roles --query "Roles[?contains(to_string(AssumeRolePolicyDocument),'lambda.amazonaws.com')].Arn" --output text
 ```
 
-Then build and deploy with the script (replace the ARN with yours):
+CloudShell has Python 3.13, which matches the template. Then build and deploy with the script (replace the ARN and email with yours). The email gets admin rights, which let it scan the account that hosts ClearCloud:
 
 ```bash
-./scripts/deploy_backend.sh clearcloud arn:aws:iam::<ACCOUNT_ID>:role/<ROLE_NAME>
+./scripts/deploy_backend.sh clearcloud arn:aws:iam::<ACCOUNT_ID>:role/<ROLE_NAME> you@example.com
 ```
 
-The script reads your current session credentials and passes them to the stack, so the Lambdas can call DynamoDB, SQS, Secrets Manager and the other services even when the execution role only allows logging. **These credentials expire when the session ends.** When scans start failing with `ExpiredToken`, start the lab again and re-run the script. In a normal AWS account, deploy with `sam deploy --guided` instead and leave the credential parameters empty.
+The script also creates the secret that signs sign-in tokens and stores it in `~/.clearcloud_jwt_secret`, so redeploys keep users signed in. If an earlier attempt left the stack in `ROLLBACK_COMPLETE`, the script deletes it first.
+
+The script reads your current session credentials and passes them to the stack, so the Lambdas can call DynamoDB, SNS, SSM and the other services even when the execution role only allows logging. **These credentials expire when the session ends.** When scans start failing with `ExpiredToken`, start the lab again and re-run the script. In a normal AWS account, deploy with `sam deploy --guided` instead and leave the credential parameters empty.
 
 Never commit these credentials or show them on screen.
 
@@ -51,43 +55,17 @@ The first deployment also creates a CloudFront distribution, which can take 5 to
 ./scripts/deploy_frontend.sh clearcloud
 ```
 
-This reads the stack outputs, writes the site's `config.json` (region and Cognito app client ID), uploads the site to S3, and invalidates the CloudFront cache. It prints the site URL when done.
+This reads the stack outputs, writes the site's `config.json`, uploads the site to S3, and invalidates the CloudFront cache. It prints the site URL when done.
 
 Run it again whenever you change anything in `src/frontend/`.
 
 ## 4. Create your first user
 
-Open the site URL and use **Create account**. Cognito emails a verification code. If email delivery is blocked in your environment, create and confirm a user from the CLI instead (take the pool ID from the stack outputs):
-
-```bash
-POOL_ID=$(aws cloudformation describe-stacks --stack-name clearcloud \
-  --query "Stacks[0].Outputs[?OutputKey=='UserPoolId'].OutputValue" --output text)
-
-aws cognito-idp admin-create-user --user-pool-id "$POOL_ID" \
-  --username you@example.com \
-  --user-attributes Name=email,Value=you@example.com Name=email_verified,Value=true \
-  --message-action SUPPRESS
-
-aws cognito-idp admin-set-user-password --user-pool-id "$POOL_ID" \
-  --username you@example.com --password '<A-Strong-Password1>' --permanent
-```
-
-To confirm a user who signed up on the site but never got the code:
-
-```bash
-aws cognito-idp admin-confirm-sign-up --user-pool-id "$POOL_ID" --username you@example.com
-```
+Open the site URL and use **Create account**. Passwords need 8 or more characters with an uppercase letter, a lowercase letter and a number. You are signed in straight away. There is no email verification.
 
 ## 5. Make yourself an admin
 
-Members of the `admins` group may scan the AWS account that hosts ClearCloud. Everyone else must connect their own account through a role.
-
-```bash
-aws cognito-idp admin-add-user-to-group --user-pool-id "$POOL_ID" \
-  --username you@example.com --group-name admins
-```
-
-Sign out and back in afterwards, because group membership is read from the sign-in token.
+Emails listed in the `AdminEmails` parameter may scan the AWS account that hosts ClearCloud. Everyone else must connect their own account through a role. To change the list, re-run the deploy script with the email as the third argument, then sign out and back in, because the admin flag is stored in the sign-in token.
 
 ## 6. Connect accounts and scan
 
@@ -148,14 +126,14 @@ Delete them afterwards so they do not use up credits.
 
 | Symptom | Likely cause and fix |
 |---|---|
-| The site says it is not configured | Run `./scripts/deploy_frontend.sh` to publish `config.json` |
+| Blank page or 403 on the site | Run `./scripts/deploy_frontend.sh`, then wait a minute for CloudFront |
+| `/api/...` returns 403 `Forbidden` | The Function URL needs a second permission in newer accounts: `aws lambda add-permission --function-name clearcloud-api --statement-id invoke --action lambda:InvokeFunction --principal '*' --invoked-via-function-url` |
 | Account status shows `error: ...` | Open the account's message: bad credentials, an API not enabled, or a role that cannot be assumed |
-| "Restricted to admins" when adding an AWS account | Add yourself to the `admins` group (step 5) and sign in again |
+| "Restricted to admins" when adding an AWS account | Deploy with your email as the third argument (step 5) and sign in again |
 | Scans fail with `ExpiredToken` | The sandbox credentials expired; re-run `./scripts/deploy_backend.sh` |
-| Scan never finishes | Check the dead-letter queue (`DeadLetterQueueUrl` output) and the scanner Lambda's CloudWatch logs |
+| Scan never finishes | Check the scanner Lambda's CloudWatch logs (`/aws/lambda/clearcloud-scanner`) |
 | Spend chart says unavailable | Cost Explorer is blocked in this account; findings still work |
-| Sign-up code never arrives | Use the CLI commands in step 4 |
-| 401 after a while | The sign-in token expired; sign in again |
+| 401 after a while | The sign-in token expired (12 hours); sign in again |
 
 ## Clean up
 
@@ -171,5 +149,5 @@ sam delete --stack-name clearcloud
 Removing an account in the dashboard deletes its stored credentials. To check for leftovers:
 
 ```bash
-aws secretsmanager list-secrets --filters Key=name,Values=clearcloud/
+aws ssm describe-parameters --parameter-filters Key=Name,Option=BeginsWith,Values=/clearcloud/
 ```

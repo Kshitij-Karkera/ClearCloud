@@ -11,15 +11,13 @@ output() {
 
 BUCKET="$(output FrontendBucketName)"
 DISTRIBUTION="$(output DistributionId)"
-CLIENT_ID="$(output UserPoolClientId)"
-REGION="$(output Region)"
 SITE_URL="$(output SiteUrl)"
 
 STAGING="$(mktemp -d)"
 trap 'rm -rf "$STAGING"' EXIT
 
 cp "$ROOT"/src/frontend/index.html "$ROOT"/src/frontend/style.css "$ROOT"/src/frontend/app.js "$STAGING"/
-printf '{"region":"%s","userPoolClientId":"%s"}\n' "$REGION" "$CLIENT_ID" > "$STAGING/config.json"
+printf '{}\n' > "$STAGING/config.json"
 
 aws s3 sync "$STAGING" "s3://$BUCKET" --delete
 aws cloudfront create-invalidation --distribution-id "$DISTRIBUTION" --paths "/*" > /dev/null

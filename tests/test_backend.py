@@ -14,23 +14,30 @@ def _load_modules():
     for sub in ("scanner", "api", "dispatcher"):
         sys.path.insert(0, os.path.join(ROOT, sub))
     import api_logic
+    import auth
     import cc_session
     import dispatch_logic
     import reporting
 
-    return api_logic, dispatch_logic, reporting, cc_session
+    return api_logic, dispatch_logic, reporting, cc_session, auth
 
 
-def _load_scanner_app():
-    path = os.path.join(ROOT, "scanner", "app.py")
-    spec = importlib.util.spec_from_file_location("scanner_app", path)
+def _load_app(folder, name):
+    path = os.path.join(ROOT, folder, "app.py")
+    spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-logic, dispatch_logic, reporting, cc_session = _load_modules()
-scanner_app = _load_scanner_app()
+os.environ["JWT_SECRET"] = "test-secret-" + "x" * 24
+os.environ["ADMIN_EMAILS"] = "boss@example.com"
+os.environ["TOPIC_ARN"] = "arn:aws:sns:us-east-1:123456789012:scan"
+os.environ["TABLE_NAME"] = "table"
+
+logic, dispatch_logic, reporting, cc_session, auth = _load_modules()
+scanner_app = _load_app("scanner", "scanner_app")
+api_app = _load_app("api", "api_app")
 
 GUID = "11111111-2222-3333-4444-555555555555"
 ROLE = "arn:aws:iam::123456789012:role/ClearCloudReadOnly"
@@ -174,7 +181,7 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual([len(b) for b in batches], [10, 10, 5])
         entries = dispatch_logic.build_entries(batches[2])
         self.assertEqual([e["Id"] for e in entries], ["0", "1", "2", "3", "4"])
-        self.assertEqual(json.loads(entries[0]["MessageBody"]), {"pk": "USER#20", "sk": "ACCOUNT#a"})
+        self.assertEqual(json.loads(entries[0]["Message"]), {"pk": "USER#20", "sk": "ACCOUNT#a"})
 
 
 class ReportingTest(unittest.TestCase):
@@ -208,81 +215,233 @@ class SessionHelperTest(unittest.TestCase):
         env["CC_SESSION_TOKEN"] = ""
         self.assertIsNone(cc_session.credentials_from_env(env)["aws_session_token"])
 
-    def test_worker_count(self):
-        self.assertEqual(cc_session.worker_count(0, 3), 0)
-        self.assertEqual(cc_session.worker_count(2, 3), 2)
-        self.assertEqual(cc_session.worker_count(50, 3), 3)
-        self.assertEqual(cc_session.worker_count(5, 0), 0)
 
-    def test_start_workers_skips_when_not_configured(self):
-        self.assertEqual(cc_session.start_workers("", 3), 0)
-        self.assertEqual(cc_session.start_workers("fn", 0), 0)
-
-
-class FakeContext:
-    def __init__(self, remaining):
-        self.remaining = list(remaining)
-
-    def get_remaining_time_in_millis(self):
-        return self.remaining.pop(0) if len(self.remaining) > 1 else self.remaining[0]
-
-
-class FakeSqs:
-    def __init__(self, bodies):
-        self.queue = [
-            {"Body": json.dumps(b), "ReceiptHandle": f"r{i}"} for i, b in enumerate(bodies)
-        ]
-        self.deleted = []
-        self.delayed = []
-
-    def receive_message(self, **kwargs):
-        return {"Messages": [self.queue.pop(0)]} if self.queue else {}
-
-    def delete_message(self, QueueUrl, ReceiptHandle):
-        self.deleted.append(ReceiptHandle)
-
-    def change_message_visibility(self, QueueUrl, ReceiptHandle, VisibilityTimeout):
-        self.delayed.append((ReceiptHandle, VisibilityTimeout))
-
-
-class ScannerDrainTest(unittest.TestCase):
+class ScannerEventTest(unittest.TestCase):
     def setUp(self):
-        self.original = (scanner_app._sqs, scanner_app.process)
+        self.original = scanner_app.process
 
     def tearDown(self):
-        scanner_app._sqs, scanner_app.process = self.original
+        scanner_app.process = self.original
 
-    def test_drain_deletes_successes_and_retries_failures(self):
-        sqs = FakeSqs([{"pk": "a", "sk": "1"}, {"pk": "b", "sk": "2"}, {"pk": "c", "sk": "3"}])
+    def test_sns_event_is_unwrapped(self):
         seen = []
+        scanner_app.process = lambda message, now: seen.append(message)
+        event = {"Records": [{"Sns": {"Message": json.dumps({"pk": "a", "sk": "1"})}}]}
+        self.assertEqual(scanner_app.lambda_handler(event, None), {"processed": 1})
+        self.assertEqual(seen, [{"pk": "a", "sk": "1"}])
 
-        def fake_process(message, now):
-            seen.append(message["pk"])
-            if message["pk"] == "b":
-                raise RuntimeError("boom")
+    def test_direct_invoke_and_empty_event(self):
+        seen = []
+        scanner_app.process = lambda message, now: seen.append(message)
+        self.assertEqual(scanner_app.lambda_handler({"pk": "a", "sk": "1"}, None), {"processed": 1})
+        self.assertEqual(scanner_app.lambda_handler({}, None), {"processed": 0})
+        self.assertEqual(len(seen), 1)
 
-        scanner_app._sqs = lambda: sqs
-        scanner_app.process = fake_process
+    def test_failures_are_raised_so_lambda_retries(self):
+        def boom(message, now):
+            raise RuntimeError("boom")
+
+        scanner_app.process = boom
+        event = {"Records": [{"Sns": {"Message": json.dumps({"pk": "a", "sk": "1"})}}]}
         with contextlib.redirect_stderr(io.StringIO()):
-            result = scanner_app.lambda_handler({"mode": "drain"}, FakeContext([600000]))
-        self.assertEqual(result, {"processed": 2, "failed": 1})
-        self.assertEqual(seen, ["a", "b", "c"])
-        self.assertEqual(sqs.deleted, ["r0", "r2"])
-        self.assertEqual(sqs.delayed, [("r1", scanner_app.RETRY_DELAY_SECONDS)])
+            with self.assertRaises(RuntimeError):
+                scanner_app.lambda_handler(event, None)
 
-    def test_drain_stops_when_time_is_nearly_up(self):
-        sqs = FakeSqs([{"pk": "a", "sk": "1"}, {"pk": "b", "sk": "2"}])
-        scanner_app._sqs = lambda: sqs
-        scanner_app.process = lambda message, now: None
-        context = FakeContext([600000, scanner_app.MIN_REMAINING_MS - 1])
-        result = scanner_app.lambda_handler({"mode": "drain"}, context)
-        self.assertEqual(result["processed"], 1)
-        self.assertEqual(len(sqs.queue), 1)
 
-    def test_drain_on_empty_queue(self):
-        scanner_app._sqs = lambda: FakeSqs([])
-        result = scanner_app.lambda_handler({"mode": "drain"}, FakeContext([600000]))
-        self.assertEqual(result, {"processed": 0, "failed": 0})
+class RouteTest(unittest.TestCase):
+    def test_known_routes(self):
+        self.assertEqual(logic.match_route("POST", "/api/auth/login"), ("login", (), False))
+        self.assertEqual(logic.match_route("GET", "/api/report/"), ("report", (), True))
+        name, params, needs_auth = logic.match_route("DELETE", "/api/accounts/0123456789ab")
+        self.assertEqual((name, params, needs_auth), ("delete_account", ("0123456789ab",), True))
+
+    def test_unknown_routes_are_404(self):
+        for method, path in (("GET", "/api/nope"), ("PUT", "/api/accounts"), ("DELETE", "/api/accounts/../x")):
+            with self.assertRaises(logic.ApiError) as ctx:
+                logic.match_route(method, path)
+            self.assertEqual(ctx.exception.status, 404)
+
+
+class AuthTest(unittest.TestCase):
+    def test_password_hash_round_trip(self):
+        stored = auth.hash_password("Passw0rdOK")
+        self.assertTrue(auth.verify_password("Passw0rdOK", stored))
+        self.assertFalse(auth.verify_password("Passw0rdNO", stored))
+        self.assertFalse(auth.verify_password("x", "garbage"))
+        self.assertNotEqual(stored, auth.hash_password("Passw0rdOK"))
+
+    def test_password_and_email_rules(self):
+        for bad in ("short1A", "alllowercase1", "ALLUPPERCASE1", "NoDigitsHere", "", None):
+            with self.assertRaises(auth.AuthError, msg=str(bad)):
+                auth.validate_password(bad)
+        self.assertEqual(auth.validate_password("Passw0rdOK"), "Passw0rdOK")
+        self.assertEqual(auth.normalize_email("  Me@Example.COM "), "me@example.com")
+        for bad in ("nope", "a@b", "a b@c.com", 5):
+            with self.assertRaises(auth.AuthError):
+                auth.normalize_email(bad)
+
+    def test_token_round_trip_and_expiry(self):
+        token = auth.sign_token({"sub": "u1", "email": "a@b.co"}, "k" * 32, now=1000, ttl=60)
+        self.assertEqual(auth.verify_token(token, "k" * 32, now=1030)["sub"], "u1")
+        with self.assertRaises(auth.AuthError):
+            auth.verify_token(token, "k" * 32, now=1061)
+
+    def test_tampered_tokens_are_rejected(self):
+        token = auth.sign_token({"sub": "u1"}, "k" * 32, now=1000, ttl=600)
+        head, body, sig = token.split(".")
+        forged_body = auth._b64(json.dumps({"sub": "admin", "exp": 9999999999}).encode())
+        none_head = auth._b64(json.dumps({"alg": "none"}).encode())
+        for bad in (
+            token[:-2] + "xx",
+            f"{head}.{forged_body}.{sig}",
+            f"{none_head}.{body}.",
+            "not-a-token",
+            "",
+        ):
+            with self.assertRaises(auth.AuthError, msg=bad):
+                auth.verify_token(bad, "k" * 32, now=1100)
+        with self.assertRaises(auth.AuthError):
+            auth.verify_token(token, "other" * 8, now=1100)
+
+
+class FakeTable:
+    def __init__(self):
+        self.items = {}
+
+    def get_item(self, Key):
+        item = self.items.get((Key["pk"], Key["sk"]))
+        return {"Item": dict(item)} if item else {}
+
+    def put_item(self, Item, ConditionExpression=None):
+        key = (Item["pk"], Item["sk"])
+        if ConditionExpression and key in self.items:
+            err = Exception("exists")
+            err.response = {"Error": {"Code": "ConditionalCheckFailedException"}}
+            raise err
+        self.items[key] = dict(Item)
+
+    def update_item(self, Key, UpdateExpression, ExpressionAttributeValues=None, ReturnValues=None):
+        item = self.items[(Key["pk"], Key["sk"])]
+        if UpdateExpression.startswith("ADD fails"):
+            item["fails"] = item.get("fails", 0) + 1
+            return {"Attributes": {"fails": item["fails"]}}
+        if UpdateExpression.startswith("SET locked_until"):
+            item["locked_until"] = ExpressionAttributeValues[":until"]
+            item.pop("fails", None)
+        elif UpdateExpression.startswith("REMOVE"):
+            item.pop("fails", None)
+            item.pop("locked_until", None)
+        elif UpdateExpression.startswith("SET scan_requested_at"):
+            item["scan_requested_at"] = ExpressionAttributeValues[":t"]
+
+
+class FakeSns:
+    def __init__(self, failed=None):
+        self.batches = []
+        self.failed = failed or []
+
+    def publish_batch(self, TopicArn, PublishBatchRequestEntries):
+        self.batches.append((TopicArn, PublishBatchRequestEntries))
+        return {"Failed": self.failed}
+
+
+def call(method, path, body=None, token=None):
+    event = {"requestContext": {"http": {"method": method}}, "rawPath": path, "headers": {}}
+    if token:
+        event["headers"]["authorization"] = "Bearer " + token
+    if body is not None:
+        event["body"] = json.dumps(body)
+    result = api_app.lambda_handler(event, None)
+    return result["statusCode"], json.loads(result["body"])
+
+
+class ApiFlowTest(unittest.TestCase):
+    def setUp(self):
+        self.table = FakeTable()
+        self.sns = FakeSns()
+        self.saved = (api_app._table, api_app._sns, api_app._query)
+        api_app._table = lambda: self.table
+        api_app._sns = lambda: self.sns
+        api_app._query = lambda pk, prefix: [
+            dict(v) for (p, s), v in self.table.items.items() if p == pk and s.startswith(prefix)
+        ]
+
+    def tearDown(self):
+        api_app._table, api_app._sns, api_app._query = self.saved
+
+    def register(self, email="me@example.com", password="Passw0rdOK"):
+        return call("POST", "/api/auth/register", {"email": email, "password": password})
+
+    def test_register_then_login(self):
+        status, body = self.register()
+        self.assertEqual(status, 201)
+        claims = auth.verify_token(body["token"], os.environ["JWT_SECRET"])
+        self.assertEqual(claims["email"], "me@example.com")
+        self.assertFalse(claims["adm"])
+        self.assertNotIn("Passw0rdOK", json.dumps(list(self.table.items.values())))
+        status, body = call("POST", "/api/auth/login", {"email": "ME@example.com", "password": "Passw0rdOK"})
+        self.assertEqual(status, 200)
+        self.assertIn("token", body)
+
+    def test_duplicate_and_weak_registration(self):
+        self.register()
+        self.assertEqual(self.register()[0], 409)
+        self.assertEqual(self.register("b@example.com", "weak")[0], 400)
+        self.assertEqual(self.register("not-an-email")[0], 400)
+
+    def test_admin_email_gets_admin_claim(self):
+        _, body = self.register("boss@example.com")
+        self.assertTrue(auth.verify_token(body["token"], os.environ["JWT_SECRET"])["adm"])
+
+    def test_wrong_password_is_generic_and_locks_after_five_failures(self):
+        self.register()
+        for _ in range(auth.MAX_FAILED_LOGINS):
+            status, body = call("POST", "/api/auth/login", {"email": "me@example.com", "password": "Wrong0Pass"})
+            self.assertEqual((status, body["error"]), (401, "Incorrect email or password"))
+        status, _ = call("POST", "/api/auth/login", {"email": "me@example.com", "password": "Passw0rdOK"})
+        self.assertEqual(status, 429)
+
+    def test_unknown_user_gets_same_error_as_wrong_password(self):
+        status, body = call("POST", "/api/auth/login", {"email": "ghost@example.com", "password": "Passw0rdOK"})
+        self.assertEqual((status, body["error"]), (401, "Incorrect email or password"))
+
+    def test_protected_routes_need_a_valid_token(self):
+        self.assertEqual(call("GET", "/api/report")[0], 401)
+        self.assertEqual(call("GET", "/api/accounts", token="garbage")[0], 401)
+        expired = auth.sign_token({"sub": "u"}, os.environ["JWT_SECRET"], now=1, ttl=1)
+        self.assertEqual(call("GET", "/api/accounts", token=expired)[0], 401)
+        self.assertEqual(call("GET", "/api/nope")[0], 404)
+
+    def test_scan_publishes_one_message_per_due_account_and_honours_cooldown(self):
+        _, body = self.register()
+        token = body["token"]
+        sub = auth.verify_token(token, os.environ["JWT_SECRET"])["sub"]
+        for n in range(2):
+            self.table.items[(f"USER#{sub}", f"ACCOUNT#{n}")] = {
+                "pk": f"USER#{sub}", "sk": f"ACCOUNT#{n}", "account_id": str(n),
+            }
+        status, body = call("POST", "/api/scan", {}, token)
+        self.assertEqual((status, body), (202, {"queued": 2, "skipped": 0}))
+        topic, entries = self.sns.batches[0]
+        self.assertEqual(topic, os.environ["TOPIC_ARN"])
+        self.assertEqual(sorted(json.loads(e["Message"])["sk"] for e in entries), ["ACCOUNT#0", "ACCOUNT#1"])
+        status, body = call("POST", "/api/scan", {}, token)
+        self.assertEqual((status, body), (202, {"queued": 0, "skipped": 2}))
+        self.assertEqual(len(self.sns.batches), 1)
+
+    def test_scan_without_accounts_and_failed_publish(self):
+        _, body = self.register()
+        token = body["token"]
+        self.assertEqual(call("POST", "/api/scan", {}, token)[0], 400)
+        sub = auth.verify_token(token, os.environ["JWT_SECRET"])["sub"]
+        self.table.items[(f"USER#{sub}", "ACCOUNT#0")] = {"pk": f"USER#{sub}", "sk": "ACCOUNT#0"}
+        self.sns.failed = [{"Id": "0"}]
+        self.assertEqual(call("POST", "/api/scan", {}, token)[0], 502)
+
+    def test_host_account_is_admin_only(self):
+        _, body = self.register()
+        status, _ = call("POST", "/api/accounts", {"provider": "aws", "label": "Host"}, body["token"])
+        self.assertEqual(status, 403)
 
 
 if __name__ == "__main__":

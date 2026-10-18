@@ -1,137 +1,110 @@
 <!doctype html>
 <html lang="en">
-
 <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>ClearCloud</title>
-    <link rel="stylesheet" href="style.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ClearCloud</title>
+<link rel="stylesheet" href="style.css">
 </head>
-
 <body>
-    <header>
-        <div class="head-row">
-            <div>
-                <h1>ClearCloud</h1>
-                <p id="sub">Multi-cloud cost-waste scanner</p>
-            </div>
-            <div id="userbar" hidden>
-                <span id="user-email"></span>
-                <button id="signout" class="link" type="button">Sign out</button>
-            </div>
+<header>
+  <div class="head-row">
+    <div>
+      <h1>ClearCloud</h1>
+      <p id="sub">Multi-cloud cost-waste scanner</p>
+    </div>
+    <div id="userbar" hidden>
+      <span id="user-email"></span>
+      <button id="signout" class="link" type="button">Sign out</button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div id="notes"></div>
+
+  <section id="auth" hidden>
+    <div class="card auth-card">
+      <div class="tabs">
+        <button id="tab-signin" class="tab active" type="button">Sign in</button>
+        <button id="tab-signup" class="tab" type="button">Create account</button>
+      </div>
+
+      <form id="form-signin">
+        <label>Email <input id="si-email" type="email" autocomplete="username" required></label>
+        <label>Password <input id="si-password" type="password" autocomplete="current-password" required></label>
+        <button type="submit" class="primary">Sign in</button>
+      </form>
+
+      <form id="form-signup" hidden>
+        <label>Email <input id="su-email" type="email" autocomplete="username" required></label>
+        <label>Password <input id="su-password" type="password" autocomplete="new-password" minlength="8" required></label>
+        <p class="hint">At least 8 characters with an uppercase letter, a lowercase letter and a number.</p>
+        <button type="submit" class="primary">Create account</button>
+      </form>
+
+      <p id="auth-msg" class="msg" role="status"></p>
+    </div>
+  </section>
+
+  <section id="app" hidden>
+    <div class="tiles">
+      <div class="tile"><div class="label">Potential monthly savings</div><div class="value good" id="t-save">&ndash;</div></div>
+      <div class="tile"><div class="label">Issues found</div><div class="value" id="t-count">&ndash;</div></div>
+      <div class="tile"><div class="label">Clouds scanned</div><div class="value" id="t-clouds">&ndash;</div></div>
+      <div class="tile"><div class="label">AWS 30-day spend</div><div class="value" id="t-spend">&ndash;</div></div>
+    </div>
+
+    <div class="section-head">
+      <h2>Connected accounts</h2>
+      <button id="scan-now" type="button" class="primary">Scan now</button>
+    </div>
+    <p id="scan-msg" class="msg" role="status"></p>
+    <div class="card" id="accounts"></div>
+
+    <div class="card" id="account-form-card">
+      <h3>Connect an account</h3>
+      <form id="form-account">
+        <label>Cloud
+          <select id="acc-provider">
+            <option value="aws">AWS</option>
+            <option value="azure">Azure</option>
+            <option value="gcp">GCP</option>
+          </select>
+        </label>
+        <label>Label <input id="acc-label" maxlength="60" placeholder="e.g. Team sandbox" required></label>
+
+        <div data-for="aws">
+          <label>Regions <input id="acc-regions" placeholder="us-east-1, us-west-2"></label>
+          <label>Role ARN <input id="acc-role" placeholder="arn:aws:iam::123456789012:role/ClearCloudReadOnly"></label>
+          <p class="hint">A read-only role in your AWS account that ClearCloud can assume. Leave empty to scan the account hosting ClearCloud (admins only).</p>
         </div>
-    </header>
 
-    <main>
-        <div id="notes"></div>
+        <div data-for="azure" hidden>
+          <label>Tenant ID <input id="az-tenant" autocomplete="off"></label>
+          <label>Client (app) ID <input id="az-client" autocomplete="off"></label>
+          <label>Client secret <input id="az-secret" type="password" autocomplete="off"></label>
+          <label>Subscription ID <input id="az-sub" autocomplete="off"></label>
+          <p class="hint">Use a service principal with the Reader role only.</p>
+        </div>
 
-        <section id="auth" hidden>
-            <div class="card auth-card">
-                <div class="tabs">
-                    <button id="tab-signin" class="tab active" type="button">Sign in</button>
-                    <button id="tab-signup" class="tab" type="button">Create account</button>
-                </div>
+        <div data-for="gcp" hidden>
+          <label>Service account key (JSON) <textarea id="acc-gcp" rows="5" autocomplete="off"></textarea></label>
+          <p class="hint">Use a service account with Compute Viewer and Monitoring Viewer only.</p>
+        </div>
 
-                <form id="form-signin">
-                    <label>Email <input id="si-email" type="email" autocomplete="username" required></label>
-                    <label>Password <input id="si-password" type="password" autocomplete="current-password"
-                            required></label>
-                    <button type="submit" class="primary">Sign in</button>
-                </form>
+        <button type="submit" class="primary">Connect account</button>
+      </form>
+      <p id="acc-msg" class="msg" role="status"></p>
+    </div>
 
-                <form id="form-signup" hidden>
-                    <label>Email <input id="su-email" type="email" autocomplete="username" required></label>
-                    <label>Password <input id="su-password" type="password" autocomplete="new-password" minlength="8"
-                            required></label>
-                    <p class="hint">At least 8 characters with an uppercase letter, a lowercase letter and a number.</p>
-                    <button type="submit" class="primary">Create account</button>
-                </form>
+    <h2>AWS spend by service (last 30 days)</h2>
+    <div class="card" id="spend"></div>
 
-                <form id="form-confirm" hidden>
-                    <p class="hint">Enter the verification code sent to your email.</p>
-                    <label>Code <input id="cf-code" inputmode="numeric" autocomplete="one-time-code" required></label>
-                    <button type="submit" class="primary">Confirm</button>
-                    <button id="resend" type="button" class="link">Resend code</button>
-                </form>
-
-                <p id="auth-msg" class="msg" role="status"></p>
-            </div>
-        </section>
-
-        <section id="app" hidden>
-            <div class="tiles">
-                <div class="tile">
-                    <div class="label">Potential monthly savings</div>
-                    <div class="value good" id="t-save">&ndash;</div>
-                </div>
-                <div class="tile">
-                    <div class="label">Issues found</div>
-                    <div class="value" id="t-count">&ndash;</div>
-                </div>
-                <div class="tile">
-                    <div class="label">Clouds scanned</div>
-                    <div class="value" id="t-clouds">&ndash;</div>
-                </div>
-                <div class="tile">
-                    <div class="label">AWS 30-day spend</div>
-                    <div class="value" id="t-spend">&ndash;</div>
-                </div>
-            </div>
-
-            <div class="section-head">
-                <h2>Connected accounts</h2>
-                <button id="scan-now" type="button" class="primary">Scan now</button>
-            </div>
-            <p id="scan-msg" class="msg" role="status"></p>
-            <div class="card" id="accounts"></div>
-
-            <div class="card" id="account-form-card">
-                <h3>Connect an account</h3>
-                <form id="form-account">
-                    <label>Cloud
-                        <select id="acc-provider">
-                            <option value="aws">AWS</option>
-                            <option value="azure">Azure</option>
-                            <option value="gcp">GCP</option>
-                        </select>
-                    </label>
-                    <label>Label <input id="acc-label" maxlength="60" placeholder="e.g. Team sandbox" required></label>
-
-                    <div data-for="aws">
-                        <label>Regions <input id="acc-regions" placeholder="us-east-1, us-west-2"></label>
-                        <label>Role ARN <input id="acc-role"
-                                placeholder="arn:aws:iam::123456789012:role/ClearCloudReadOnly"></label>
-                        <p class="hint">A read-only role in your AWS account that ClearCloud can assume. Leave empty to
-                            scan the account hosting ClearCloud (admins only).</p>
-                    </div>
-
-                    <div data-for="azure" hidden>
-                        <label>Tenant ID <input id="az-tenant" autocomplete="off"></label>
-                        <label>Client (app) ID <input id="az-client" autocomplete="off"></label>
-                        <label>Client secret <input id="az-secret" type="password" autocomplete="off"></label>
-                        <label>Subscription ID <input id="az-sub" autocomplete="off"></label>
-                        <p class="hint">Use a service principal with the Reader role only.</p>
-                    </div>
-
-                    <div data-for="gcp" hidden>
-                        <label>Service account key (JSON) <textarea id="acc-gcp" rows="5"
-                                autocomplete="off"></textarea></label>
-                        <p class="hint">Use a service account with Compute Viewer and Monitoring Viewer only.</p>
-                    </div>
-
-                    <button type="submit" class="primary">Connect account</button>
-                </form>
-                <p id="acc-msg" class="msg" role="status"></p>
-            </div>
-
-            <h2>AWS spend by service (last 30 days)</h2>
-            <div class="card" id="spend"></div>
-
-            <h2>Recommendations</h2>
-            <div class="card" id="findings"></div>
-        </section>
-    </main>
-    <script src="app.js"></script>
+    <h2>Recommendations</h2>
+    <div class="card" id="findings"></div>
+  </section>
+</main>
+<script src="app.js"></script>
 </body>
-
 </html>

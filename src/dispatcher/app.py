@@ -23,22 +23,16 @@ def _all_accounts(table):
 
 def lambda_handler(event, context):
     table = cc_session.resource("dynamodb").Table(os.environ["TABLE_NAME"])
-    sqs = cc_session.client("sqs")
-    queue_url = os.environ["QUEUE_URL"]
+    sns = cc_session.client("sns")
+    topic_arn = os.environ["TOPIC_ARN"]
 
     accounts = _all_accounts(table)
     failed = 0
     for batch in chunks(accounts, 10):
-        resp = sqs.send_message_batch(
-            QueueUrl=queue_url, Entries=build_entries(batch))
+        resp = sns.publish_batch(TopicArn=topic_arn, PublishBatchRequestEntries=build_entries(batch))
         failed += len(resp.get("Failed", []))
 
     print(json.dumps({"accounts": len(accounts), "failed": failed}))
     if failed:
-        raise RuntimeError(f"{failed} scan messages could not be queued")
-    workers = cc_session.start_workers(
-        os.environ.get("SCANNER_FUNCTION", ""),
-        cc_session.worker_count(len(accounts), int(
-            os.environ.get("MAX_WORKERS", "3"))),
-    )
-    return {"queued": len(accounts), "workers": workers}
+        raise RuntimeError(f"{failed} scan messages could not be published")
+    return {"queued": len(accounts)}

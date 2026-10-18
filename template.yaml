@@ -8,12 +8,15 @@ Parameters:
     Description: >
       ARN of an existing IAM role the functions run as. Student sandboxes cannot create
       IAM roles, so pass a role that already exists and that Lambda can assume.
-  ScannerWorkers:
-    Type: Number
-    Default: 3
-    MinValue: 1
-    MaxValue: 10
-    Description: Maximum number of scanner Lambdas started in parallel for one scan request
+  JwtSecret:
+    Type: String
+    NoEcho: true
+    MinLength: 32
+    Description: Random secret that signs sign-in tokens. deploy_backend.sh generates one for you.
+  AdminEmails:
+    Type: String
+    Default: ''
+    Description: Comma-separated emails that get admin rights (may scan the account that hosts ClearCloud)
   AwsAccessKeyId:
     Type: String
     NoEcho: true
@@ -32,7 +35,7 @@ Parameters:
 
 Globals:
   Function:
-    Runtime: python3.12
+    Runtime: python3.13
     Timeout: 30
     MemorySize: 256
 
@@ -66,68 +69,10 @@ Resources:
         AttributeName: expires_at
         Enabled: true
 
-  ScanDeadLetterQueue:
-    Type: AWS::SQS::Queue
+  ScanTopic:
+    Type: AWS::SNS::Topic
     Properties:
-      MessageRetentionPeriod: 1209600
-
-  ScanQueue:
-    Type: AWS::SQS::Queue
-    Properties:
-      VisibilityTimeout: 1800
-      RedrivePolicy:
-        deadLetterTargetArn: !GetAtt ScanDeadLetterQueue.Arn
-        maxReceiveCount: 3
-
-  UserPool:
-    Type: AWS::Cognito::UserPool
-    Properties:
-      UserPoolName: !Sub ${AWS::StackName}-users
-      UsernameAttributes:
-        - email
-      AutoVerifiedAttributes:
-        - email
-      Policies:
-        PasswordPolicy:
-          MinimumLength: 8
-          RequireLowercase: true
-          RequireUppercase: true
-          RequireNumbers: true
-          RequireSymbols: false
-      AccountRecoverySetting:
-        RecoveryMechanisms:
-          - Name: verified_email
-            Priority: 1
-
-  UserPoolClient:
-    Type: AWS::Cognito::UserPoolClient
-    Properties:
-      UserPoolId: !Ref UserPool
-      GenerateSecret: false
-      PreventUserExistenceErrors: ENABLED
-      ExplicitAuthFlows:
-        - ALLOW_USER_PASSWORD_AUTH
-        - ALLOW_REFRESH_TOKEN_AUTH
-
-  AdminGroup:
-    Type: AWS::Cognito::UserPoolGroup
-    Properties:
-      UserPoolId: !Ref UserPool
-      GroupName: admins
-      Description: May scan the AWS account that hosts ClearCloud
-
-  HttpApi:
-    Type: AWS::Serverless::HttpApi
-    Properties:
-      Auth:
-        DefaultAuthorizer: CognitoAuth
-        Authorizers:
-          CognitoAuth:
-            IdentitySource: $request.header.Authorization
-            JwtConfiguration:
-              issuer: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}
-              audience:
-                - !Ref UserPoolClient
+      DisplayName: ClearCloud scan requests
 
   ApiFunction:
     Type: AWS::Serverless::Function
@@ -136,46 +81,17 @@ Resources:
       CodeUri: src/api/
       Handler: app.lambda_handler
       Role: !Ref LabRoleArn
+      FunctionUrlConfig:
+        AuthType: NONE
       Environment:
         Variables:
           TABLE_NAME: !Ref Table
-          QUEUE_URL: !Ref ScanQueue
-          SCANNER_FUNCTION: !Ref ScannerFunction
-          MAX_WORKERS: !Ref ScannerWorkers
+          TOPIC_ARN: !Ref ScanTopic
+          JWT_SECRET: !Ref JwtSecret
+          ADMIN_EMAILS: !Ref AdminEmails
           CC_ACCESS_KEY_ID: !Ref AwsAccessKeyId
           CC_SECRET_ACCESS_KEY: !Ref AwsSecretAccessKey
           CC_SESSION_TOKEN: !Ref AwsSessionToken
-      Events:
-        GetReport:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: /api/report
-            Method: GET
-        ListAccounts:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: /api/accounts
-            Method: GET
-        CreateAccount:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: /api/accounts
-            Method: POST
-        DeleteAccount:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: /api/accounts/{account_id}
-            Method: DELETE
-        RequestScan:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: /api/scan
-            Method: POST
 
   DispatcherFunction:
     Type: AWS::Serverless::Function
@@ -188,9 +104,7 @@ Resources:
       Environment:
         Variables:
           TABLE_NAME: !Ref Table
-          QUEUE_URL: !Ref ScanQueue
-          SCANNER_FUNCTION: !Ref ScannerFunction
-          MAX_WORKERS: !Ref ScannerWorkers
+          TOPIC_ARN: !Ref ScanTopic
           CC_ACCESS_KEY_ID: !Ref AwsAccessKeyId
           CC_SECRET_ACCESS_KEY: !Ref AwsSecretAccessKey
           CC_SESSION_TOKEN: !Ref AwsSessionToken
@@ -212,11 +126,15 @@ Resources:
       Environment:
         Variables:
           TABLE_NAME: !Ref Table
-          QUEUE_URL: !Ref ScanQueue
           DEFAULT_AWS_REGION: !Ref AWS::Region
           CC_ACCESS_KEY_ID: !Ref AwsAccessKeyId
           CC_SECRET_ACCESS_KEY: !Ref AwsSecretAccessKey
           CC_SESSION_TOKEN: !Ref AwsSessionToken
+      Events:
+        ScanRequests:
+          Type: SNS
+          Properties:
+            Topic: !Ref ScanTopic
 
   FrontendBucket:
     Type: AWS::S3::Bucket
@@ -251,7 +169,7 @@ Resources:
               OriginAccessIdentity: ''
             OriginAccessControlId: !GetAtt OriginAccessControl.Id
           - Id: api
-            DomainName: !Sub ${HttpApi}.execute-api.${AWS::Region}.amazonaws.com
+            DomainName: !Select [2, !Split ['/', !GetAtt ApiFunctionUrl.FunctionUrl]]
             CustomOriginConfig:
               OriginProtocolPolicy: https-only
         DefaultCacheBehavior:
@@ -298,15 +216,11 @@ Outputs:
     Value: !Ref FrontendBucket
   DistributionId:
     Value: !Ref Distribution
-  UserPoolId:
-    Value: !Ref UserPool
-  UserPoolClientId:
-    Value: !Ref UserPoolClient
   Region:
     Value: !Ref AWS::Region
-  ScanQueueUrl:
-    Value: !Ref ScanQueue
-  DeadLetterQueueUrl:
-    Value: !Ref ScanDeadLetterQueue
+  ScanTopicArn:
+    Value: !Ref ScanTopic
+  ApiFunctionUrl:
+    Value: !GetAtt ApiFunctionUrl.FunctionUrl
   DispatcherFunctionName:
     Value: !Ref DispatcherFunction

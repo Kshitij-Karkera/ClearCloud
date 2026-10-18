@@ -9,11 +9,7 @@ import rules
 from providers import aws as aws_provider
 
 TABLE_NAME = os.environ.get("TABLE_NAME", "")
-QUEUE_URL = os.environ.get("QUEUE_URL", "")
-MIN_REMAINING_MS = 90000
-RETRY_DELAY_SECONDS = 30
-DEFAULT_AWS_REGION = os.environ.get(
-    "DEFAULT_AWS_REGION") or os.environ.get("AWS_REGION", "us-east-1")
+DEFAULT_AWS_REGION = os.environ.get("DEFAULT_AWS_REGION") or os.environ.get("AWS_REGION", "us-east-1")
 CPU_LOOKBACK_DAYS = int(os.environ.get("CPU_LOOKBACK_DAYS", "7"))
 
 _clients = {}
@@ -26,15 +22,10 @@ def _table():
 
 
 def _get_secret(name):
-    if "secrets" not in _clients:
-        _clients["secrets"] = cc_session.client("secretsmanager")
-    return json.loads(_clients["secrets"].get_secret_value(SecretId=name)["SecretString"])
-
-
-def _sqs():
-    if "sqs" not in _clients:
-        _clients["sqs"] = cc_session.client("sqs")
-    return _clients["sqs"]
+    if "ssm" not in _clients:
+        _clients["ssm"] = cc_session.client("ssm")
+    resp = _clients["ssm"].get_parameter(Name=name, WithDecryption=True)
+    return json.loads(resp["Parameter"]["Value"])
 
 
 def _merge(target, part):
@@ -56,13 +47,11 @@ def collect_for_account(account, now):
         elif account.get("host_account"):
             session = None
         else:
-            raise PermissionError(
-                "AWS account has no role_arn and is not an approved host account")
+            raise PermissionError("AWS account has no role_arn and is not an approved host account")
         regions = list(account.get("regions") or []) or [DEFAULT_AWS_REGION]
         for region in regions:
             try:
-                _merge(inventory, aws_provider.collect(
-                    region, now, CPU_LOOKBACK_DAYS, session))
+                _merge(inventory, aws_provider.collect(region, now, CPU_LOOKBACK_DAYS, session))
             except Exception as exc:
                 errors.append(f"{region}: {type(exc).__name__}: {exc}")
         spend, ce_status = aws_provider.collect_spend(now, session)
@@ -116,51 +105,31 @@ def process(message, now):
     )
     _table().put_item(
         Item=reporting.build_history_item(
-            account, scanned_at, now.timestamp(
-            ), summary["total_est_monthly_savings"]
+            account, scanned_at, now.timestamp(), summary["total_est_monthly_savings"]
         )
     )
     _record_status(key, now, f"ok: {len(findings)} findings")
 
 
-def drain(context):
-    sqs = _sqs()
-    processed = 0
-    failed = 0
-    while context.get_remaining_time_in_millis() > MIN_REMAINING_MS:
-        resp = sqs.receive_message(
-            QueueUrl=QUEUE_URL, MaxNumberOfMessages=1, WaitTimeSeconds=2
-        )
-        messages = resp.get("Messages", [])
-        if not messages:
-            break
-        for message in messages:
-            try:
-                now = datetime.datetime.now(datetime.timezone.utc)
-                process(json.loads(message["Body"]), now)
-                sqs.delete_message(QueueUrl=QUEUE_URL,
-                                   ReceiptHandle=message["ReceiptHandle"])
-                processed += 1
-            except Exception:
-                traceback.print_exc()
-                failed += 1
-                sqs.change_message_visibility(
-                    QueueUrl=QUEUE_URL,
-                    ReceiptHandle=message["ReceiptHandle"],
-                    VisibilityTimeout=RETRY_DELAY_SECONDS,
-                )
-    return {"processed": processed, "failed": failed}
+def messages_from_event(event):
+    if "pk" in event and "sk" in event:
+        return [event]
+    messages = []
+    for record in event.get("Records", []):
+        body = record.get("Sns", {}).get("Message")
+        if body:
+            messages.append(json.loads(body))
+    return messages
 
 
 def lambda_handler(event, context):
-    if event.get("mode") == "drain":
-        return drain(context)
     now = datetime.datetime.now(datetime.timezone.utc)
-    failures = []
-    for record in event.get("Records", []):
+    processed = 0
+    for message in messages_from_event(event):
         try:
-            process(json.loads(record["body"]), now)
+            process(message, now)
+            processed += 1
         except Exception:
             traceback.print_exc()
-            failures.append({"itemIdentifier": record["messageId"]})
-    return {"batchItemFailures": failures}
+            raise
+    return {"processed": processed}

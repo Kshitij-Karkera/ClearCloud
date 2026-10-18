@@ -1,4 +1,3 @@
-import json
 import os
 
 
@@ -26,22 +25,3 @@ def client(name, **kwargs):
 
 def resource(name, **kwargs):
     return session().resource(name, **kwargs)
-
-
-def worker_count(queued, max_workers):
-    if queued <= 0 or max_workers <= 0:
-        return 0
-    return min(queued, max_workers)
-
-
-def start_workers(function_name, count):
-    if not function_name or count <= 0:
-        return 0
-    lam = client("lambda")
-    for _ in range(count):
-        lam.invoke(
-            FunctionName=function_name,
-            InvocationType="Event",
-            Payload=json.dumps({"mode": "drain"}).encode(),
-        )
-    return count

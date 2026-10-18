@@ -21,21 +21,20 @@ Cloud waste is easy to create and hard to see. An engineer forgets a disk after 
 
 ```
 Browser (single-page app)
-   |  sign in with Cognito, then call the API with a JWT
+   |  sign in, then call the API with a signed token
    v
 CloudFront (CDN, HTTPS)
    |-- /*      --> S3 bucket (static site, private, served via Origin Access Control)
-   '-- /api/*  --> API Gateway (HTTP API, JWT authorizer backed by Cognito)
+   '-- /api/*  --> API Lambda (Function URL)
+                      |-- /api/auth/*  sign-up and sign-in (users and password hashes in DynamoDB)
+                      |-- SSM Parameter Store   (Azure / GCP credentials, one SecureString per account)
+                      '-- DynamoDB              (users, accounts, reports, history)
                       |
                       v
-                  API Lambda --> Secrets Manager   (Azure / GCP credentials, one secret per account)
-                      |   |
-                      |   '--> DynamoDB            (accounts, reports, history)
+                  SNS scan topic  <-- Dispatcher Lambda <-- EventBridge (daily)
+                      |  (one message per account)
                       v
-                  SQS scan queue  <-- Dispatcher Lambda <-- EventBridge (daily)
-                      |  (dead-letter queue after 3 failed attempts)
-                      v
-                  Scanner Lambda (scales out, one message per account)
+                  Scanner Lambda (scales out, one invocation per message)
                       |
         +-------------+----------------+
         v             v                v
@@ -46,7 +45,7 @@ CloudFront (CDN, HTTPS)
 ### How a scan works
 
 1. **Trigger.** EventBridge runs the dispatcher once a day, or a user clicks "Scan now".
-2. **Fan-out.** One SQS message is queued per connected account, so accounts are scanned in parallel and one slow or failing account cannot block the others.
+2. **Fan-out.** One SNS message is published per connected account and each one triggers its own scanner Lambda, so accounts are scanned in parallel and one slow or failing account cannot block the others.
 3. **Collect.** The scanner Lambda picks up a message and loads the account. A provider module (`aws.py`, `azure.py` or `gcp.py`) calls that cloud's read-only APIs and converts the results into a common format: disks, public IPs and VMs.
 4. **Analyze.** A single provider-neutral rule engine (`rules.py`) finds waste in that common format and prices it.
 5. **Store.** The report is saved to DynamoDB under the owning user. A history record is kept for 90 days.
@@ -58,13 +57,11 @@ CloudFront (CDN, HTTPS)
 |---|---|
 | CloudFront | Serves the site and fronts the API on one domain over HTTPS |
 | S3 | Hosts the static frontend privately, accessible only through CloudFront |
-| Cognito | User sign-up, email verification, sign-in, and an `admins` group |
-| API Gateway (HTTP API) | REST API with a JWT authorizer that validates Cognito tokens |
-| Lambda | API handler, dispatcher and scanner, all event-driven |
-| DynamoDB | Multi-tenant storage with a sparse index for listing all accounts and TTL for history |
-| SQS (+ dead-letter queue) | Fan-out, retries, and a cap on scanner concurrency |
+| Lambda | API handler (with a Function URL), dispatcher and scanner, all event-driven |
+| DynamoDB | Users, accounts, reports and history in one multi-tenant table, with a sparse index for listing all accounts and TTL for history |
+| SNS | Fan-out: one message per account triggers one scanner invocation, with automatic retries |
 | EventBridge | Nightly schedule |
-| Secrets Manager | Per-account Azure and GCP credentials |
+| SSM Parameter Store | Per-account Azure and GCP credentials as encrypted SecureString parameters |
 | STS | Optional cross-account role assumption for scanning other AWS accounts |
 | CloudFormation / SAM | The whole stack is defined as code in `template.yaml` |
 
@@ -72,9 +69,9 @@ CloudFront (CDN, HTTPS)
 
 - **One rule engine for every cloud.** Each provider only has to translate its resources into three small shapes. The rules never see cloud-specific data, so adding a fourth cloud means writing one collector and a price table.
 - **Serverless end to end.** Nothing runs between scans, so the system costs close to nothing at idle and scales out when many accounts are scanned at once.
-- **Queue-based scanning.** SQS decouples "who needs a scan" from "doing the scan". It gives retries and a dead-letter queue for free, and `ScannerWorkers` caps how many scanner Lambdas run in parallel. Scanner workers pull accounts from the queue themselves, so the queue works even where Lambda cannot be wired to SQS directly.
+- **Fan-out scanning.** SNS decouples "who needs a scan" from "doing the scan". Each account becomes its own Lambda invocation, and Lambda retries a failed one automatically. Failures that the scanner can explain (bad credentials, a disabled API) are saved on the account as a status instead of being retried forever.
 - **Read-only by design.** The tool asks for the least access possible (Reader on Azure, Compute and Monitoring Viewer on GCP, an `ec2:Describe*` style role on AWS), so a leaked credential cannot change infrastructure.
-- **Same-origin API.** CloudFront routes `/api/*` to API Gateway, so the browser talks to a single domain and no CORS configuration is needed.
+- **Same-origin API.** CloudFront routes `/api/*` to the API Lambda's Function URL, so the browser talks to a single domain and no CORS configuration is needed.
 - **Failures are isolated.** If one account has bad credentials or a region fails, the others still complete. The failure shows up as a status and warning on the dashboard instead of an outage.
 
 ## Tech stack
@@ -91,11 +88,11 @@ clearcloud/
 |-- scripts/deploy_frontend.sh    # publishes the site and its config to S3 / CloudFront
 |-- docs/DEPLOYMENT.md            # step-by-step deployment guide
 |-- src/
-|   |-- api/                      # API Lambda: accounts, report, scan
-|   |-- dispatcher/               # nightly fan-out to SQS
-|   |-- scanner/                  # SQS worker, rule engine, cloud collectors
+|   |-- api/                      # API Lambda: sign-in, accounts, report, scan
+|   |-- dispatcher/               # nightly fan-out to SNS
+|   |-- scanner/                  # SNS-triggered worker, rule engine, cloud collectors
 |   |   `-- providers/            # aws.py, azure.py, gcp.py
-|   `-- frontend/                 # single-page app (Cognito sign-in, dashboard)
+|   `-- frontend/                 # single-page app (sign-in, dashboard)
 `-- tests/                        # unit tests
 ```
 
@@ -119,10 +116,10 @@ To deploy to AWS, see **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
 
 ## Security
 
-- **Authentication.** Cognito issues JWTs, and API Gateway rejects any request without a valid one.
+- **Authentication.** Passwords are hashed with PBKDF2-SHA256 (200,000 iterations, random salt) and never stored or returned. Sign-in issues an HMAC-signed token that expires after 12 hours, and every API route except sign-up and sign-in rejects a missing, tampered or expired token. Five wrong passwords lock the account for five minutes, and a wrong email and a wrong password give the same error.
 - **Tenant isolation.** Every database key is built from the user ID in the verified token, never from client input, so one user cannot read or delete another's data.
-- **Credentials.** Azure and GCP keys go straight into Secrets Manager. The API never returns them, and removing an account deletes its secret.
-- **Host account protection.** Scanning the AWS account that hosts ClearCloud is limited to the `admins` group. Other users must connect their own account through a role.
+- **Credentials.** Azure and GCP keys go straight into encrypted SSM parameters. The API never returns them, and removing an account deletes its parameter.
+- **Host account protection.** Scanning the AWS account that hosts ClearCloud is limited to emails listed in the `AdminEmails` stack parameter. Other users must connect their own account through a role.
 - **Confused-deputy protection.** Cross-account AWS access uses a per-account External ID.
 - **Input validation.** Account requests are validated for provider, region, ARN and credential formats, and for size.
 - **Abuse limits.** There is a cap on connected accounts per user and a cooldown between scans.
@@ -136,14 +133,17 @@ To deploy to AWS, see **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
 - **Savings are estimates** from built-in approximate US on-demand price tables. They rank findings and are not billing-accurate.
 - **Detection is rule-based**, not machine learning.
 - **Sandbox credentials.** In student sandboxes that cannot create IAM roles, the Lambdas call AWS with temporary session credentials passed in as template parameters. This is for sandbox use only: the credentials expire and are refreshed by re-running `scripts/deploy_backend.sh`. In a normal account, leave those parameters empty and use a proper execution role.
-- **Sessions last about an hour.** There is no silent token refresh yet, so users sign in again after expiry.
+- **Sandbox service substitutions.** The AWS Academy sandbox does not allow creating Cognito, API Gateway, SQS or Secrets Manager resources. ClearCloud therefore uses its own DynamoDB-backed sign-in, a Lambda Function URL, SNS fan-out and SSM Parameter Store. In a normal account these four would be Cognito, API Gateway, SQS and Secrets Manager, and only the small `auth.py` module and the queue and secret calls would change.
+- **No email verification or password reset** yet, because the sign-in system is our own. Users sign in immediately after creating an account.
+- **No dead-letter queue.** A scan that keeps failing is retried by Lambda and then dropped. The account's status shows the last error.
+- **Sessions last 12 hours.** There is no silent token refresh, so users sign in again after expiry.
 - **CloudFront and the API sit behind HTTPS only**, but there is no custom domain, WAF or alerting yet (see the roadmap).
 
 ## Roadmap
 
-- Step Functions to orchestrate scans, and SNS email alerts for new high-savings findings
+- Step Functions to orchestrate scans, and SNS email alerts for new high-savings findings (SNS is already deployed for fan-out)
 - CloudWatch dashboard and alarms, X-Ray tracing, and WAF on the public endpoints
-- A load test showing scanner concurrency scaling and the queue draining
+- A load test showing scanner concurrency scaling
 - Athena queries over archived scan snapshots in S3
 - Spend anomaly detection using the stored history
 - Azure and GCP billing data
