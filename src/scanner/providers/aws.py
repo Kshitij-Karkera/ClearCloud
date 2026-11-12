@@ -1,6 +1,10 @@
 import datetime
 
 import cc_session
+from botocore.config import Config
+
+# Adaptive retries back off when the API throttles (e.g. many scans against one account).
+RETRY_CONFIG = Config(retries={"mode": "adaptive", "max_attempts": 10})
 
 
 def _avg_cpu(cloudwatch, instance_id, now, lookback_days):
@@ -58,8 +62,8 @@ def make_session(role_arn, external_id, session_name):
 
 def collect(region, now, lookback_days=7, session=None):
     session = session or cc_session.session()
-    ec2 = session.client("ec2", region_name=region)
-    cw = session.client("cloudwatch", region_name=region)
+    ec2 = session.client("ec2", region_name=region, config=RETRY_CONFIG)
+    cw = session.client("cloudwatch", region_name=region, config=RETRY_CONFIG)
 
     disks = []
     for page in ec2.get_paginator("describe_volumes").paginate():
