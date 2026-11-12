@@ -14,6 +14,7 @@ Each synthetic account scans the real sandbox account, so make sure it has no wa
 unless you pass --force.
 """
 import argparse
+import collections
 import json
 import statistics
 import sys
@@ -245,8 +246,11 @@ def run(args, ddb, sns, cfn, ec2, cw, table_name=None, topic_arn=None):
         else:
             print(f"Cleaned up {cleanup(table, pk)} items.")
 
-    print(json.dumps(result, indent=2))
     errors = [r["status"] for r in rows if not r["status"].startswith("ok")]
+    if errors:
+        breakdown = collections.Counter(e[:160] for e in errors)
+        result["error_breakdown"] = dict(breakdown.most_common(5))
+    print(json.dumps(result, indent=2))
     if errors:
         print("Sample error:", errors[0][:200])
     path = f"loadtest_{args.accounts}_{run_id}.json"
