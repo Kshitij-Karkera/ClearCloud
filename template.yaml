@@ -32,6 +32,19 @@ Parameters:
     NoEcho: true
     Default: ''
     Description: Optional. Matches AwsAccessKeyId
+  AlertEmail:
+    Type: String
+    Default: ''
+    Description: Optional. Email address that receives new-waste alerts and alarm notifications (AWS sends a confirmation link first)
+  EnableAlarms:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Create CloudWatch alarms. Off by default because some student sandboxes deny alarm creation
+
+Conditions:
+  HasAlertEmail: !Not [!Equals [!Ref AlertEmail, '']]
+  AlarmsOn: !Equals [!Ref EnableAlarms, 'true']
 
 Globals:
   Function:
@@ -73,6 +86,19 @@ Resources:
     Type: AWS::SNS::Topic
     Properties:
       DisplayName: ClearCloud scan requests
+
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: ClearCloud alerts
+
+  AlertEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlertEmail
+    Properties:
+      TopicArn: !Ref AlertTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
 
   ApiFunction:
     Type: AWS::Serverless::Function
@@ -127,6 +153,7 @@ Resources:
         Variables:
           TABLE_NAME: !Ref Table
           DEFAULT_AWS_REGION: !Ref AWS::Region
+          ALERT_TOPIC_ARN: !Ref AlertTopic
           CC_ACCESS_KEY_ID: !Ref AwsAccessKeyId
           CC_SECRET_ACCESS_KEY: !Ref AwsSecretAccessKey
           CC_SESSION_TOKEN: !Ref AwsSessionToken
@@ -135,6 +162,117 @@ Resources:
           Type: SNS
           Properties:
             Topic: !Ref ScanTopic
+
+  ApiErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: AlarmsOn
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-api-errors
+      AlarmDescription: Api Lambda reported at least one error in 5 minutes
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ApiFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertTopic
+
+  DispatcherErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: AlarmsOn
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-dispatcher-errors
+      AlarmDescription: Dispatcher Lambda reported at least one error in 5 minutes
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref DispatcherFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertTopic
+
+  ScannerErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: AlarmsOn
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-scanner-errors
+      AlarmDescription: Scanner Lambda reported at least one error in 5 minutes
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ScannerFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertTopic
+
+  ScannerSlowAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: AlarmsOn
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-scanner-near-timeout
+      AlarmDescription: A scan ran longer than 240 s (the timeout is 300 s)
+      Namespace: AWS/Lambda
+      MetricName: Duration
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ScannerFunction
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 240000
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertTopic
+
+  MonitoringDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub ${AWS::StackName}-monitoring
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {"type": "metric", "x": 0, "y": 0, "width": 12, "height": 6,
+             "properties": {"title": "Invocations", "region": "${AWS::Region}", "view": "timeSeries", "stat": "Sum", "period": 300,
+               "metrics": [
+                 ["AWS/Lambda", "Invocations", "FunctionName", "${ApiFunction}"],
+                 ["AWS/Lambda", "Invocations", "FunctionName", "${DispatcherFunction}"],
+                 ["AWS/Lambda", "Invocations", "FunctionName", "${ScannerFunction}"]]}},
+            {"type": "metric", "x": 12, "y": 0, "width": 12, "height": 6,
+             "properties": {"title": "Errors", "region": "${AWS::Region}", "view": "timeSeries", "stat": "Sum", "period": 300,
+               "metrics": [
+                 ["AWS/Lambda", "Errors", "FunctionName", "${ApiFunction}"],
+                 ["AWS/Lambda", "Errors", "FunctionName", "${DispatcherFunction}"],
+                 ["AWS/Lambda", "Errors", "FunctionName", "${ScannerFunction}"]]}},
+            {"type": "metric", "x": 0, "y": 6, "width": 12, "height": 6,
+             "properties": {"title": "Scanner duration (ms)", "region": "${AWS::Region}", "view": "timeSeries", "period": 300,
+               "metrics": [
+                 ["AWS/Lambda", "Duration", "FunctionName", "${ScannerFunction}", {"stat": "Average"}],
+                 ["AWS/Lambda", "Duration", "FunctionName", "${ScannerFunction}", {"stat": "Maximum"}]]}},
+            {"type": "metric", "x": 12, "y": 6, "width": 12, "height": 6,
+             "properties": {"title": "Concurrent scanner executions", "region": "${AWS::Region}", "view": "timeSeries", "stat": "Maximum", "period": 60,
+               "metrics": [
+                 ["AWS/Lambda", "ConcurrentExecutions", "FunctionName", "${ScannerFunction}"]]}}
+          ]
+        }
 
   FrontendBucket:
     Type: AWS::S3::Bucket
@@ -224,3 +362,7 @@ Outputs:
     Value: !GetAtt ApiFunctionUrl.FunctionUrl
   DispatcherFunctionName:
     Value: !Ref DispatcherFunction
+  AlertTopicArn:
+    Value: !Ref AlertTopic
+  DashboardName:
+    Value: !Sub ${AWS::StackName}-monitoring
