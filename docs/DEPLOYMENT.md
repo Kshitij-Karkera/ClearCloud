@@ -33,11 +33,14 @@ Find a role the Lambdas can run as. In a Learner Lab it is `LabRole`. In a sandb
 aws iam list-roles --query "Roles[?contains(to_string(AssumeRolePolicyDocument),'lambda.amazonaws.com')].Arn" --output text
 ```
 
-CloudShell has Python 3.13, which matches the template. Then build and deploy with the script (replace the ARN and email with yours). The email gets admin rights, which let it scan the account that hosts ClearCloud:
+CloudShell has Python 3.13, which matches the template. Then build and deploy with the script (replace the ARN and emails with yours). The first email gets admin rights, which let it scan the account that hosts ClearCloud, so it must be the email you sign in with. The optional second email receives new-waste alerts (see "Monitoring and alerts" below):
 
 ```bash
-./scripts/deploy_backend.sh clearcloud arn:aws:iam::<ACCOUNT_ID>:role/<ROLE_NAME> you@example.com
+chmod +x scripts/deploy_backend.sh
+./scripts/deploy_backend.sh clearcloud arn:aws:iam::<ACCOUNT_ID>:role/<ROLE_NAME> you@example.com alerts@example.com
 ```
+
+If CloudShell cannot fetch credentials (`Unable to retrieve credentials ... 500`), copy the `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN` values from AWS Academy (AWS Details, then AWS CLI) into environment variables in the shell. The script uses them when they are already set.
 
 The script also creates the secret that signs sign-in tokens and stores it in `~/.clearcloud_jwt_secret`, so redeploys keep users signed in. If an earlier attempt left the stack in `ROLLBACK_COMPLETE`, the script deletes it first.
 
@@ -65,7 +68,7 @@ Open the site URL and use **Create account**. Passwords need 8 or more character
 
 ## 5. Make yourself an admin
 
-Emails listed in the `AdminEmails` parameter may scan the AWS account that hosts ClearCloud. Everyone else must connect their own account through a role. To change the list, re-run the deploy script with the email as the third argument, then sign out and back in, because the admin flag is stored in the sign-in token.
+Emails listed in the `AdminEmails` parameter may scan the AWS account that hosts ClearCloud. Everyone else must connect their own account through a role. To change the list, re-run the deploy script with the email as the third argument (keep the alert email as the fourth), then sign out and back in, because the admin flag is stored in the sign-in token.
 
 ## 6. Connect accounts and scan
 
@@ -131,6 +134,7 @@ Delete them afterwards so they do not use up credits.
 | Account status shows `error: ...` | Open the account's message: bad credentials, an API not enabled, or a role that cannot be assumed |
 | "Restricted to admins" when adding an AWS account | Deploy with your email as the third argument (step 5) and sign in again |
 | Scans fail with `ExpiredToken` | The sandbox credentials expired; re-run `./scripts/deploy_backend.sh` |
+| Alert email never arrives | The subscription must be confirmed: click the link in the AWS email (check spam). `aws sns list-subscriptions-by-topic --topic-arn <AlertTopicArn>` shows `PendingConfirmation` until you do |
 | Scan never finishes | Check the scanner Lambda's CloudWatch logs (`/aws/lambda/clearcloud-scanner`) |
 | Spend chart says unavailable | Cost Explorer is blocked in this account; findings still work |
 | 401 after a while | The sign-in token expired (12 hours); sign in again |
@@ -151,3 +155,31 @@ Removing an account in the dashboard deletes its stored credentials. To check fo
 ```bash
 aws ssm describe-parameters --parameter-filters Key=Name,Option=BeginsWith,Values=/clearcloud/
 ```
+
+## Monitoring and alerts
+
+Deploy with an alert email as the fourth argument:
+
+```bash
+./scripts/deploy_backend.sh clearcloud <role-arn> <admin-email> <alert-email>
+```
+
+AWS sends a confirmation email to that address. Click **Confirm subscription**, or no alerts arrive. To add another address later without redeploying:
+
+```bash
+aws sns subscribe --topic-arn <AlertTopicArn> --protocol email --notification-endpoint <email>
+```
+
+The topic ARN is in the stack outputs as `AlertTopicArn`.
+
+**What gets sent.** After each scan, the scanner compares the new findings with the account's previous report and emails only the findings that were not there before. The first scan of an account treats every finding as new. A scan with no new findings sends nothing. A failed alert never fails the scan.
+
+**Dashboard.** In the AWS console, open CloudWatch, then Dashboards, then `clearcloud-monitoring`. It shows invocations, errors, scanner duration and scanner concurrency for the three Lambdas.
+
+**Alarms (optional).** Alarms for errors on each Lambda and for a scan that runs close to its 300 s timeout are created only when you pass `ENABLE_ALARMS=true`:
+
+```bash
+ENABLE_ALARMS=true ./scripts/deploy_backend.sh clearcloud <role-arn> <admin-email> <alert-email>
+```
+
+Some student sandboxes deny alarm creation. If the stack fails on the alarm resources, redeploy without `ENABLE_ALARMS`; the dashboard and email alerts do not depend on it.
