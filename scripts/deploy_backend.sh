@@ -4,8 +4,10 @@ set -euo pipefail
 STACK="${1:-clearcloud}"
 ROLE_ARN="${2:-}"
 ADMIN_EMAILS="${3:-}"
+ALERT_EMAIL="${4:-}"
+ENABLE_ALARMS="${ENABLE_ALARMS:-false}"
 if [ -z "$ROLE_ARN" ]; then
-  echo "usage: ./scripts/deploy_backend.sh <stack-name> <existing-lambda-role-arn> [admin-email]" >&2
+  echo "usage: ./scripts/deploy_backend.sh <stack-name> <existing-lambda-role-arn> [admin-email] [alert-email]   (set ENABLE_ALARMS=true to create CloudWatch alarms)" >&2
   exit 1
 fi
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -48,8 +50,11 @@ sam deploy \
     "LabRoleArn=$ROLE_ARN" \
     "JwtSecret=$JWT_SECRET" \
     "AdminEmails=$ADMIN_EMAILS" \
+    "AlertEmail=$ALERT_EMAIL" \
+    "EnableAlarms=$ENABLE_ALARMS" \
     "AwsAccessKeyId=$AWS_ACCESS_KEY_ID" \
     "AwsSecretAccessKey=$AWS_SECRET_ACCESS_KEY" \
     "AwsSessionToken=${AWS_SESSION_TOKEN:-}"
 
+if [ -n "$ALERT_EMAIL" ]; then echo "Check $ALERT_EMAIL for an AWS confirmation email and click Confirm subscription."; fi
 echo "Backend deployed. Session credentials expire; run this script again to refresh them."
