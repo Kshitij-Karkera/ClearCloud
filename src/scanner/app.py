@@ -3,14 +3,17 @@ import json
 import os
 import traceback
 
+import alerts
 import cc_session
 import reporting
 import rules
 from providers import aws as aws_provider
 
 TABLE_NAME = os.environ.get("TABLE_NAME", "")
-DEFAULT_AWS_REGION = os.environ.get("DEFAULT_AWS_REGION") or os.environ.get("AWS_REGION", "us-east-1")
+DEFAULT_AWS_REGION = os.environ.get(
+    "DEFAULT_AWS_REGION") or os.environ.get("AWS_REGION", "us-east-1")
 CPU_LOOKBACK_DAYS = int(os.environ.get("CPU_LOOKBACK_DAYS", "7"))
+ALERT_TOPIC_ARN = os.environ.get("ALERT_TOPIC_ARN", "")
 
 _clients = {}
 
@@ -47,11 +50,13 @@ def collect_for_account(account, now):
         elif account.get("host_account"):
             session = None
         else:
-            raise PermissionError("AWS account has no role_arn and is not an approved host account")
+            raise PermissionError(
+                "AWS account has no role_arn and is not an approved host account")
         regions = list(account.get("regions") or []) or [DEFAULT_AWS_REGION]
         for region in regions:
             try:
-                _merge(inventory, aws_provider.collect(region, now, CPU_LOOKBACK_DAYS, session))
+                _merge(inventory, aws_provider.collect(
+                    region, now, CPU_LOOKBACK_DAYS, session))
             except Exception as exc:
                 errors.append(f"{region}: {type(exc).__name__}: {exc}")
         spend, ce_status = aws_provider.collect_spend(now, session)
@@ -80,6 +85,28 @@ def _record_status(key, now, status):
     )
 
 
+def _send_alert(account, previous_item, findings, summary):
+    """Email when this scan found waste that the previous report did not have.
+
+    Never raises: a failed alert must not fail the scan itself.
+    """
+    if not ALERT_TOPIC_ARN:
+        return
+    try:
+        previous = alerts.parse_findings(
+            (previous_item or {}).get("findings_json"))
+        fresh = alerts.new_findings(previous, findings)
+        if not fresh:
+            return
+        subject, body = alerts.build_alert(account, fresh, summary)
+        cc_session.client("sns").publish(
+            TopicArn=ALERT_TOPIC_ARN, Subject=subject, Message=body)
+        print(
+            f"alert sent: {len(fresh)} new findings for {account.get('account_id')}")
+    except Exception:
+        traceback.print_exc()
+
+
 def process(message, now):
     key = {"pk": message["pk"], "sk": message["sk"]}
     account = _table().get_item(Key=key).get("Item")
@@ -98,6 +125,9 @@ def process(message, now):
     findings = rules.analyze(inventory)
     summary = rules.summarize(findings)
     scanned_at = now.isoformat()
+    previous_item = _table().get_item(
+        Key={"pk": account["pk"], "sk": f"REPORT#{account['account_id']}"}
+    ).get("Item")
     _table().put_item(
         Item=reporting.build_report_item(
             account, scanned_at, findings, summary, spend, ce_status, errors
@@ -105,9 +135,11 @@ def process(message, now):
     )
     _table().put_item(
         Item=reporting.build_history_item(
-            account, scanned_at, now.timestamp(), summary["total_est_monthly_savings"]
+            account, scanned_at, now.timestamp(
+            ), summary["total_est_monthly_savings"]
         )
     )
+    _send_alert(account, previous_item, findings, summary)
     _record_status(key, now, f"ok: {len(findings)} findings")
 
 
