@@ -15,6 +15,7 @@ Cloud waste is easy to create and hard to see. An engineer forgets a disk after 
 - Shows everything in one dashboard, tagged by cloud and account.
 - Supports many users, each with their own connected accounts and private results.
 - Scans every night and on demand ("Scan now").
+- Emails an alert when a scan finds waste that was not in the previous report.
 - Is **read-only**: it reports waste and never changes or deletes anything.
 
 ## Architecture
@@ -61,6 +62,8 @@ CloudFront (CDN, HTTPS)
 | DynamoDB | Users, accounts, reports and history in one multi-tenant table, with a sparse index for listing all accounts and TTL for history |
 | SNS | Fan-out: one message per account triggers one scanner invocation, with automatic retries |
 | EventBridge | Nightly schedule |
+| SNS (alerts topic) | Emails the user when a scan finds new waste, and notifies on alarms |
+| CloudWatch | Monitoring dashboard for the three Lambdas, plus optional alarms |
 | SSM Parameter Store | Per-account Azure and GCP credentials as encrypted SecureString parameters |
 | STS | Optional cross-account role assumption for scanning other AWS accounts |
 | CloudFormation / SAM | The whole stack is defined as code in `template.yaml` |
@@ -93,7 +96,7 @@ clearcloud/
 |   |-- scanner/                  # SNS-triggered worker, rule engine, cloud collectors
 |   |   `-- providers/            # aws.py, azure.py, gcp.py
 |   `-- frontend/                 # single-page app (sign-in, dashboard)
-`-- tests/                        # unit tests
+`-- tests/                        # unit tests (backend, rules, alerts)
 ```
 
 ## Getting started
@@ -137,12 +140,19 @@ To deploy to AWS, see **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
 - **No email verification or password reset** yet, because the sign-in system is our own. Users sign in immediately after creating an account.
 - **No dead-letter queue.** A scan that keeps failing is retried by Lambda and then dropped. The account's status shows the last error.
 - **Sessions last 12 hours.** There is no silent token refresh, so users sign in again after expiry.
-- **CloudFront and the API sit behind HTTPS only**, but there is no custom domain, WAF or alerting yet (see the roadmap).
+- **CloudFront and the API sit behind HTTPS only**, but there is no custom domain or WAF yet (see the roadmap).
+
+## Monitoring and alerts
+
+- A CloudWatch dashboard `<stack>-monitoring` shows invocations, errors, scanner duration and scanner concurrency.
+- When a scan finds waste that the previous report did not have, the scanner publishes one email to the `AlertTopic` SNS topic. The first scan of an account counts everything as new. A failed alert never fails the scan.
+- Pass an alert email as the 4th argument of `deploy_backend.sh` and confirm the AWS subscription email.
+- CloudWatch alarms (errors on each Lambda, scanner near timeout) are created only with `ENABLE_ALARMS=true`, because some student sandboxes deny alarm creation.
 
 ## Roadmap
 
-- Step Functions to orchestrate scans, and SNS email alerts for new high-savings findings (SNS is already deployed for fan-out)
-- CloudWatch dashboard and alarms, X-Ray tracing, and WAF on the public endpoints
+- Step Functions to orchestrate scans
+- X-Ray tracing and WAF on the public endpoints
 - A load test showing scanner concurrency scaling
 - Athena queries over archived scan snapshots in S3
 - Spend anomaly detection using the stored history
