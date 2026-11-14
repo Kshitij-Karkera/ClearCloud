@@ -10,15 +10,28 @@ const el = (tag, cls, text) => {
   return node;
 };
 
+const TYPE_LABELS = {
+  unattached_disk: "Unattached disk",
+  unused_public_ip: "Unused public IP",
+  idle_vm: "Idle VM",
+};
+const TYPE_COLORS = ["#2563eb", "#0ea5e9", "#f59e0b", "#8b5cf6", "#22c55e"];
+const CLOUD_NAMES = { aws: "AWS", azure: "Azure", gcp: "GCP" };
+const VIEW_TITLES = { overview: "Overview", findings: "Findings", accounts: "Accounts", spend: "AWS spend" };
+
+const typeLabel = type => TYPE_LABELS[type] || String(type || "other").replace(/_/g, " ");
+
 let config = {};
 let idToken = null;
+let report = null;
+let currentView = "overview";
 
 function storeToken(token) {
   idToken = token;
   try {
     if (token) sessionStorage.setItem("cc_token", token);
     else sessionStorage.removeItem("cc_token");
-  } catch (e) {}
+  } catch (e) { }
 }
 
 function readStoredToken() {
@@ -58,6 +71,35 @@ async function api(path, options) {
   return data;
 }
 
+/* ---------- views ---------- */
+
+function showView(name) {
+  if (!VIEW_TITLES[name]) name = "overview";
+  currentView = name;
+  document.querySelectorAll("section[data-view]").forEach(section => {
+    section.hidden = section.dataset.view !== name;
+  });
+  document.querySelectorAll(".nav").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.view === name);
+  });
+  $("page-title").textContent = VIEW_TITLES[name];
+  try { history.replaceState(null, "", "#" + name); } catch (e) { }
+}
+
+function wireNav() {
+  window.addEventListener("hashchange", () => {
+    if (!$("app").hidden) showView((location.hash || "").replace("#", ""));
+  });
+  document.querySelectorAll(".nav").forEach(btn => {
+    btn.addEventListener("click", () => showView(btn.dataset.view));
+  });
+  document.querySelectorAll("[data-goto]").forEach(btn => {
+    btn.addEventListener("click", () => showView(btn.dataset.goto));
+  });
+}
+
+/* ---------- auth ---------- */
+
 function showAuth(tab) {
   $("auth").hidden = false;
   $("app").hidden = true;
@@ -74,13 +116,17 @@ function showApp() {
   $("app").hidden = false;
   if (!config.demo) {
     $("userbar").hidden = false;
-    $("user-email").textContent = tokenPayload(idToken).email || "";
+    const email = tokenPayload(idToken).email || "";
+    $("user-email").textContent = email;
+    $("user-email").title = email;
   }
+  showView((location.hash || "").replace("#", "") || "overview");
   refreshAll();
 }
 
 function signOut() {
   storeToken(null);
+  report = null;
   showAuth("signin");
 }
 
@@ -118,20 +164,34 @@ function wireAuth() {
   });
 }
 
+/* ---------- accounts ---------- */
+
+function statusChip(status) {
+  const text = status || "never scanned";
+  const chip = el("span", "chip", text.split(" (")[0]);
+  if (/^ok/i.test(text)) chip.classList.add("ok");
+  else if (/error|fail|denied/i.test(text)) chip.classList.add("bad");
+  return chip;
+}
+
 function renderAccounts(accounts) {
   const box = $("accounts");
   box.replaceChildren();
+  $("onboard").hidden = accounts.length > 0 || Boolean(config.demo);
   if (!accounts.length) {
-    box.appendChild(el("div", "empty", "No accounts connected yet. Add one below to start scanning."));
+    box.appendChild(el("div", "empty", "No accounts connected yet. Use \"Connect account\" to start scanning."));
     return;
   }
   accounts.forEach(account => {
     const wrap = el("div", "account");
     const top = el("div", "top");
-    const title = el("span");
-    title.appendChild(el("span", "badge " + account.provider, account.provider.toUpperCase()));
-    title.appendChild(document.createTextNode(account.label));
-    top.appendChild(title);
+    const name = el("span", "name");
+    name.appendChild(el("span", "badge " + account.provider, (CLOUD_NAMES[account.provider] || account.provider).toUpperCase()));
+    name.appendChild(document.createTextNode(account.label));
+    top.appendChild(name);
+
+    const right = el("span", "name");
+    right.appendChild(statusChip(account.last_status));
     if (!config.demo) {
       const del = el("button", "link danger", "Remove");
       del.type = "button";
@@ -144,14 +204,13 @@ function renderAccounts(accounts) {
           setMessage("scan-msg", err.message, "error");
         }
       });
-      top.appendChild(del);
+      right.appendChild(del);
     }
+    top.appendChild(right);
     wrap.appendChild(top);
 
-    const status = account.last_scan_at
-      ? account.last_status + " (" + new Date(account.last_scan_at).toLocaleString() + ")"
-      : account.last_status || "never scanned";
-    wrap.appendChild(el("div", "meta", status));
+    const when = account.last_scan_at ? "Last scan " + new Date(account.last_scan_at).toLocaleString() : "Not scanned yet";
+    wrap.appendChild(el("div", "meta", when));
     if (account.role_arn) {
       wrap.appendChild(el("div", "meta", "Role: " + account.role_arn));
       wrap.appendChild(el("div", "meta", "External ID (add to the role's trust policy): " + account.external_id));
@@ -162,13 +221,172 @@ function renderAccounts(accounts) {
   });
 }
 
+/* ---------- overview ---------- */
+
+function groupSavings(findings, key) {
+  const groups = {};
+  findings.forEach(f => {
+    const g = groups[f[key]] || (groups[f[key]] = { key: f[key], savings: 0, count: 0 });
+    g.savings += f.est_monthly_savings;
+    g.count += 1;
+  });
+  return Object.values(groups).sort((a, b) => b.savings - a.savings);
+}
+
+function renderByCloud(findings) {
+  const box = $("by-cloud");
+  box.replaceChildren();
+  const groups = groupSavings(findings, "provider");
+  if (!groups.length) {
+    box.appendChild(el("div", "empty", report && report.scanned_at ? "No waste found on any cloud." : "Run a scan to see savings by cloud."));
+    return;
+  }
+  const max = Math.max.apply(null, groups.map(g => g.savings)) || 1;
+  groups.forEach(g => {
+    const row = el("div", "bar-row");
+    row.appendChild(el("div", "name", (CLOUD_NAMES[g.key] || g.key) + " · " + g.count + (g.count === 1 ? " issue" : " issues")));
+    const bar = el("div", "bar");
+    const fill = el("span", g.key);
+    fill.style.width = Math.max(4, (g.savings / max) * 100) + "%";
+    bar.appendChild(fill);
+    row.appendChild(bar);
+    row.appendChild(el("div", "amt", money(g.savings)));
+    box.appendChild(row);
+  });
+}
+
+function renderByType(findings) {
+  const box = $("by-type");
+  box.replaceChildren();
+  const groups = groupSavings(findings, "type").sort((a, b) => b.count - a.count);
+  if (!groups.length) {
+    box.appendChild(el("div", "empty", report && report.scanned_at ? "Nothing to fix. Nice." : "Run a scan to see findings by type."));
+    return;
+  }
+  const total = groups.reduce((sum, g) => sum + g.count, 0);
+  let angle = 0;
+  const stops = groups.map((g, i) => {
+    const start = angle;
+    angle += (g.count / total) * 360;
+    return TYPE_COLORS[i % TYPE_COLORS.length] + " " + start + "deg " + angle + "deg";
+  });
+  const wrap = el("div", "donut-wrap");
+  const donut = el("div", "donut");
+  donut.style.background = "conic-gradient(" + stops.join(", ") + ")";
+  const hole = el("div");
+  const num = el("b", "", String(total));
+  hole.appendChild(num);
+  hole.appendChild(document.createTextNode(total === 1 ? "issue" : "issues"));
+  donut.appendChild(hole);
+  wrap.appendChild(donut);
+  const legend = el("div", "legend");
+  groups.forEach((g, i) => {
+    const row = el("div");
+    const dot = el("span", "dot");
+    dot.style.background = TYPE_COLORS[i % TYPE_COLORS.length];
+    row.appendChild(dot);
+    row.appendChild(document.createTextNode(typeLabel(g.key) + " · " + g.count + " · " + money(g.savings) + "/mo"));
+    legend.appendChild(row);
+  });
+  wrap.appendChild(legend);
+  box.appendChild(wrap);
+}
+
+function findingNode(f) {
+  const wrap = el("div", "finding");
+  const top = el("div", "top");
+  top.appendChild(el("span", "title", f.title));
+  top.appendChild(el("span", "save", "save ~" + money(f.est_monthly_savings) + "/mo"));
+  wrap.appendChild(top);
+  const meta = el("div", "meta");
+  meta.appendChild(el("span", "badge " + f.provider, (CLOUD_NAMES[f.provider] || f.provider).toUpperCase()));
+  meta.appendChild(el("span", "chip", typeLabel(f.type)));
+  if (f.account_label) meta.appendChild(el("span", "", f.account_label));
+  meta.appendChild(el("code", "", f.resource_id));
+  if (f.region) meta.appendChild(el("span", "", f.region));
+  wrap.appendChild(meta);
+  if (f.recommendation) wrap.appendChild(el("div", "rec", f.recommendation));
+  return wrap;
+}
+
+function renderTop(findings) {
+  const box = $("top-findings");
+  box.replaceChildren();
+  if (!findings.length) {
+    box.appendChild(el("div", "empty", report && report.scanned_at ? "No wasted resources detected." : "Run a scan to see recommendations."));
+    return;
+  }
+  findings.slice(0, 3).forEach(f => box.appendChild(findingNode(f)));
+}
+
+/* ---------- findings ---------- */
+
+function fillSelect(id, values, labeler) {
+  const select = $(id);
+  const chosen = select.value;
+  const first = select.options[0];
+  select.replaceChildren(first);
+  values.forEach(v => {
+    const opt = el("option", "", labeler(v));
+    opt.value = v;
+    select.appendChild(opt);
+  });
+  if (values.indexOf(chosen) >= 0) select.value = chosen;
+}
+
+function renderFindingsList() {
+  const box = $("findings");
+  box.replaceChildren();
+  const all = report ? report.findings : [];
+  if (!all.length) {
+    box.appendChild(el("div", "empty", report && report.scanned_at ? "No wasted resources detected. Nice." : "Run a scan to see recommendations."));
+    return;
+  }
+  const term = $("f-search").value.trim().toLowerCase();
+  const cloud = $("f-cloud").value;
+  const type = $("f-type").value;
+  let rows = all.filter(f =>
+    (!cloud || f.provider === cloud) &&
+    (!type || f.type === type) &&
+    (!term || [f.title, f.resource_id, f.account_label, f.region].join(" ").toLowerCase().indexOf(term) >= 0));
+  const sort = $("f-sort").value;
+  rows = rows.slice().sort((a, b) => {
+    if (sort === "cloud") return a.provider.localeCompare(b.provider) || b.est_monthly_savings - a.est_monthly_savings;
+    if (sort === "type") return a.type.localeCompare(b.type) || b.est_monthly_savings - a.est_monthly_savings;
+    return b.est_monthly_savings - a.est_monthly_savings;
+  });
+  if (!rows.length) {
+    box.appendChild(el("div", "empty", "No findings match these filters."));
+    return;
+  }
+  rows.forEach(f => box.appendChild(findingNode(f)));
+}
+
+function wireFindings() {
+  ["f-search", "f-cloud", "f-type", "f-sort"].forEach(id => {
+    $(id).addEventListener(id === "f-search" ? "input" : "change", renderFindingsList);
+  });
+}
+
+/* ---------- report ---------- */
+
 function renderReport(d) {
+  report = d;
+  const findings = d.findings || [];
   $("sub").textContent = d.scanned_at
     ? "Last scan: " + new Date(d.scanned_at).toLocaleString() + " · Clouds: " + (d.providers.join(", ") || "none")
     : "No scan has completed yet";
+
   $("t-clouds").textContent = d.providers.length;
   $("t-save").textContent = money(d.summary.total_est_monthly_savings);
   $("t-count").textContent = d.summary.count;
+  $("t-count-foot").textContent = d.summary.count === 1 ? "open recommendation" : "open recommendations";
+  const clouds = d.providers.map(p => CLOUD_NAMES[p] || p).join(", ");
+  $("t-clouds-foot").textContent = clouds || "none yet";
+
+  const pill = $("nav-count");
+  pill.hidden = !d.summary.count;
+  pill.textContent = d.summary.count;
 
   const notes = $("notes");
   notes.replaceChildren();
@@ -190,46 +408,31 @@ function renderReport(d) {
     $("t-spend").textContent = money(d.spend.reduce((sum, s) => sum + s.cost, 0));
     d.spend.slice(0, 10).forEach(s => {
       const row = el("div", "bar-row");
-      row.appendChild(el("div", "", s.service));
+      row.appendChild(el("div", "name", s.service));
       const bar = el("div", "bar");
       const fill = el("span");
-      fill.style.width = (max > 0 ? (s.cost / max) * 100 : 0) + "%";
+      fill.style.width = (max > 0 ? Math.max(2, (s.cost / max) * 100) : 0) + "%";
       bar.appendChild(fill);
       row.appendChild(bar);
-      row.appendChild(el("div", "", money(s.cost)));
+      row.appendChild(el("div", "amt", money(s.cost)));
       spendBox.appendChild(row);
     });
   }
 
-  const box = $("findings");
-  box.replaceChildren();
-  if (!d.findings.length) {
-    box.appendChild(el("div", "empty",
-      d.scanned_at ? "No wasted resources detected. Nice." : "Run a scan to see recommendations."));
-    return;
-  }
-  d.findings.forEach(f => {
-    const wrap = el("div", "finding");
-    const top = el("div", "top");
-    top.appendChild(el("span", "", f.title));
-    top.appendChild(el("span", "save", "save ~" + money(f.est_monthly_savings) + "/mo"));
-    wrap.appendChild(top);
-    const meta = el("div", "meta");
-    meta.appendChild(el("span", "badge " + f.provider, f.provider.toUpperCase()));
-    meta.appendChild(document.createTextNode(
-      (f.account_label ? f.account_label + " · " : "") + f.resource_id + " · " + f.region));
-    wrap.appendChild(meta);
-    wrap.appendChild(el("div", "rec", f.recommendation));
-    box.appendChild(wrap);
-  });
+  renderByCloud(findings);
+  renderByType(findings);
+  renderTop(findings);
+  fillSelect("f-cloud", Array.from(new Set(findings.map(f => f.provider))), v => CLOUD_NAMES[v] || v);
+  fillSelect("f-type", Array.from(new Set(findings.map(f => f.type))), typeLabel);
+  renderFindingsList();
 }
 
 async function refreshAll() {
   try {
-    const [accounts, report] = await Promise.all([api("/api/accounts"), api("/api/report")]);
+    const [accounts, data] = await Promise.all([api("/api/accounts"), api("/api/report")]);
     renderAccounts(accounts.accounts);
-    renderReport(report);
-    return report;
+    renderReport(data);
+    return data;
   } catch (err) {
     setMessage("scan-msg", err.message, "error");
     return null;
@@ -239,16 +442,24 @@ async function refreshAll() {
 async function pollForUpdate(previous) {
   for (let i = 0; i < 24; i++) {
     await sleep(5000);
-    const report = await refreshAll();
-    if (report && report.scanned_at && report.scanned_at !== previous) return true;
+    const data = await refreshAll();
+    if (data && data.scanned_at && data.scanned_at !== previous) return true;
   }
   return false;
 }
 
+/* ---------- actions ---------- */
+
+function setScanning(on) {
+  const button = $("scan-now");
+  button.disabled = on;
+  button.classList.toggle("loading", on);
+  button.querySelector(".btn-label").textContent = on ? "Scanning..." : "Scan now";
+}
+
 function wireApp() {
   $("scan-now").addEventListener("click", async () => {
-    const button = $("scan-now");
-    button.disabled = true;
+    setScanning(true);
     setMessage("scan-msg", "Queuing scans...");
     try {
       const before = (await api("/api/report")).scanned_at;
@@ -263,8 +474,15 @@ function wireApp() {
     } catch (err) {
       setMessage("scan-msg", err.message, "error");
     } finally {
-      button.disabled = false;
+      setScanning(false);
     }
+  });
+
+  $("toggle-form").addEventListener("click", () => {
+    const card = $("account-form-card");
+    card.hidden = !card.hidden;
+    $("toggle-form").textContent = card.hidden ? "Connect account" : "Cancel";
+    if (!card.hidden) $("acc-label").focus();
   });
 
   $("acc-provider").addEventListener("change", () => {
@@ -316,9 +534,12 @@ async function start() {
     config = {};
   }
   wireAuth();
+  wireNav();
+  wireFindings();
   wireApp();
 
   if (config.demo) {
+    $("toggle-form").hidden = true;
     $("account-form-card").hidden = true;
     showApp();
     return;
