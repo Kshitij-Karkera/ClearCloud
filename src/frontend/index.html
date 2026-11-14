@@ -1,110 +1,260 @@
 <!doctype html>
 <html lang="en">
+
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ClearCloud</title>
-<link rel="stylesheet" href="style.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="ClearCloud finds wasted spend across AWS, Azure and GCP.">
+  <title>ClearCloud</title>
+  <link rel="icon"
+    href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232563eb'/%3E%3Cpath d='M9 20a4 4 0 0 1 .6-7.9A6 6 0 0 1 21.2 11 4.5 4.5 0 0 1 22 20z' fill='%23fff'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
 </head>
+
 <body>
-<header>
-  <div class="head-row">
-    <div>
-      <h1>ClearCloud</h1>
-      <p id="sub">Multi-cloud cost-waste scanner</p>
+
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-grid" viewBox="0 0 24 24">
+      <path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z" fill="none" stroke="currentColor" stroke-width="1.8"
+        stroke-linejoin="round" />
+    </symbol>
+    <symbol id="i-list" viewBox="0 0 24 24">
+      <path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01" fill="none" stroke="currentColor" stroke-width="2"
+        stroke-linecap="round" />
+    </symbol>
+    <symbol id="i-cloud" viewBox="0 0 24 24">
+      <path d="M7 18a4 4 0 0 1-.6-7.95A6 6 0 0 1 18 9.5 4.3 4.3 0 0 1 17.5 18z" fill="none" stroke="currentColor"
+        stroke-width="1.8" stroke-linejoin="round" />
+    </symbol>
+    <symbol id="i-chart" viewBox="0 0 24 24">
+      <path d="M4 20V4M4 20h16M8 16v-5M13 16V8M18 16v-8" fill="none" stroke="currentColor" stroke-width="1.8"
+        stroke-linecap="round" />
+    </symbol>
+    <symbol id="i-check" viewBox="0 0 24 24">
+      <path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"
+        stroke-linejoin="round" />
+    </symbol>
+  </svg>
+
+  <div id="auth" class="auth-view" hidden>
+    <div class="auth-brand">
+      <div class="brand"><span class="logo" aria-hidden="true"><svg viewBox="0 0 24 24">
+            <use href="#i-cloud" />
+          </svg></span> ClearCloud</div>
+      <h1>See the cloud spend you are wasting.</h1>
+      <p>One ranked list of unattached disks, unused public IPs and idle VMs across AWS, Azure and GCP, with a monthly
+        saving for each.</p>
+      <ul class="points">
+        <li><svg>
+            <use href="#i-check" />
+          </svg> Read-only access. ClearCloud never changes your accounts.</li>
+        <li><svg>
+            <use href="#i-check" />
+          </svg> Scans run in parallel on serverless AWS.</li>
+        <li><svg>
+            <use href="#i-check" />
+          </svg> Email alerts only when new waste appears.</li>
+      </ul>
     </div>
-    <div id="userbar" hidden>
-      <span id="user-email"></span>
-      <button id="signout" class="link" type="button">Sign out</button>
+    <div class="auth-panel">
+      <div class="auth-card">
+        <div class="tabs" role="tablist">
+          <button id="tab-signin" class="tab active" type="button" role="tab">Sign in</button>
+          <button id="tab-signup" class="tab" type="button" role="tab">Create account</button>
+        </div>
+
+        <form id="form-signin">
+          <label>Email <input id="si-email" type="email" autocomplete="username" required></label>
+          <label>Password <input id="si-password" type="password" autocomplete="current-password" required></label>
+          <button type="submit" class="btn primary block">Sign in</button>
+        </form>
+
+        <form id="form-signup" hidden>
+          <label>Email <input id="su-email" type="email" autocomplete="username" required></label>
+          <label>Password <input id="su-password" type="password" autocomplete="new-password" minlength="8"
+              required></label>
+          <p class="hint">At least 8 characters with an uppercase letter, a lowercase letter and a number.</p>
+          <button type="submit" class="btn primary block">Create account</button>
+        </form>
+
+        <p id="auth-msg" class="msg" role="status"></p>
+      </div>
     </div>
   </div>
-</header>
 
-<main>
-  <div id="notes"></div>
-
-  <section id="auth" hidden>
-    <div class="card auth-card">
-      <div class="tabs">
-        <button id="tab-signin" class="tab active" type="button">Sign in</button>
-        <button id="tab-signup" class="tab" type="button">Create account</button>
+  <div id="app" class="shell" hidden>
+    <aside class="sidebar">
+      <div class="brand"><span class="logo" aria-hidden="true"><svg viewBox="0 0 24 24">
+            <use href="#i-cloud" />
+          </svg></span> ClearCloud</div>
+      <nav aria-label="Main">
+        <button class="nav active" data-view="overview" type="button"><svg>
+            <use href="#i-grid" />
+          </svg><span>Overview</span></button>
+        <button class="nav" data-view="findings" type="button"><svg>
+            <use href="#i-list" />
+          </svg><span>Findings</span><b id="nav-count" class="pill" hidden></b></button>
+        <button class="nav" data-view="accounts" type="button"><svg>
+            <use href="#i-cloud" />
+          </svg><span>Accounts</span></button>
+        <button class="nav" data-view="spend" type="button"><svg>
+            <use href="#i-chart" />
+          </svg><span>AWS spend</span></button>
+      </nav>
+      <div id="userbar" class="userbar" hidden>
+        <span id="user-email" title=""></span>
+        <button id="signout" class="link" type="button">Sign out</button>
       </div>
+    </aside>
 
-      <form id="form-signin">
-        <label>Email <input id="si-email" type="email" autocomplete="username" required></label>
-        <label>Password <input id="si-password" type="password" autocomplete="current-password" required></label>
-        <button type="submit" class="primary">Sign in</button>
-      </form>
-
-      <form id="form-signup" hidden>
-        <label>Email <input id="su-email" type="email" autocomplete="username" required></label>
-        <label>Password <input id="su-password" type="password" autocomplete="new-password" minlength="8" required></label>
-        <p class="hint">At least 8 characters with an uppercase letter, a lowercase letter and a number.</p>
-        <button type="submit" class="primary">Create account</button>
-      </form>
-
-      <p id="auth-msg" class="msg" role="status"></p>
-    </div>
-  </section>
-
-  <section id="app" hidden>
-    <div class="tiles">
-      <div class="tile"><div class="label">Potential monthly savings</div><div class="value good" id="t-save">&ndash;</div></div>
-      <div class="tile"><div class="label">Issues found</div><div class="value" id="t-count">&ndash;</div></div>
-      <div class="tile"><div class="label">Clouds scanned</div><div class="value" id="t-clouds">&ndash;</div></div>
-      <div class="tile"><div class="label">AWS 30-day spend</div><div class="value" id="t-spend">&ndash;</div></div>
-    </div>
-
-    <div class="section-head">
-      <h2>Connected accounts</h2>
-      <button id="scan-now" type="button" class="primary">Scan now</button>
-    </div>
-    <p id="scan-msg" class="msg" role="status"></p>
-    <div class="card" id="accounts"></div>
-
-    <div class="card" id="account-form-card">
-      <h3>Connect an account</h3>
-      <form id="form-account">
-        <label>Cloud
-          <select id="acc-provider">
-            <option value="aws">AWS</option>
-            <option value="azure">Azure</option>
-            <option value="gcp">GCP</option>
-          </select>
-        </label>
-        <label>Label <input id="acc-label" maxlength="60" placeholder="e.g. Team sandbox" required></label>
-
-        <div data-for="aws">
-          <label>Regions <input id="acc-regions" placeholder="us-east-1, us-west-2"></label>
-          <label>Role ARN <input id="acc-role" placeholder="arn:aws:iam::123456789012:role/ClearCloudReadOnly"></label>
-          <p class="hint">A read-only role in your AWS account that ClearCloud can assume. Leave empty to scan the account hosting ClearCloud (admins only).</p>
+    <div class="main">
+      <header class="topbar">
+        <div>
+          <h1 id="page-title">Overview</h1>
+          <p id="sub" class="sub">Multi-cloud cost-waste scanner</p>
         </div>
-
-        <div data-for="azure" hidden>
-          <label>Tenant ID <input id="az-tenant" autocomplete="off"></label>
-          <label>Client (app) ID <input id="az-client" autocomplete="off"></label>
-          <label>Client secret <input id="az-secret" type="password" autocomplete="off"></label>
-          <label>Subscription ID <input id="az-sub" autocomplete="off"></label>
-          <p class="hint">Use a service principal with the Reader role only.</p>
+        <div class="actions">
+          <span id="scan-msg" class="msg" role="status"></span>
+          <button id="scan-now" type="button" class="btn primary"><span class="spinner" aria-hidden="true"></span><span
+              class="btn-label">Scan now</span></button>
         </div>
+      </header>
 
-        <div data-for="gcp" hidden>
-          <label>Service account key (JSON) <textarea id="acc-gcp" rows="5" autocomplete="off"></textarea></label>
-          <p class="hint">Use a service account with Compute Viewer and Monitoring Viewer only.</p>
-        </div>
+      <div id="notes"></div>
 
-        <button type="submit" class="primary">Connect account</button>
-      </form>
-      <p id="acc-msg" class="msg" role="status"></p>
+      <main>
+        <section data-view="overview">
+          <div class="tiles">
+            <div class="tile accent">
+              <div class="label">Potential monthly savings</div>
+              <div class="value good" id="t-save">&ndash;</div>
+              <div class="foot" id="t-save-foot">estimated, at on-demand prices</div>
+            </div>
+            <div class="tile">
+              <div class="label">Issues found</div>
+              <div class="value" id="t-count">&ndash;</div>
+              <div class="foot" id="t-count-foot">open recommendations</div>
+            </div>
+            <div class="tile">
+              <div class="label">Clouds scanned</div>
+              <div class="value" id="t-clouds">&ndash;</div>
+              <div class="foot" id="t-clouds-foot">connected providers</div>
+            </div>
+            <div class="tile">
+              <div class="label">AWS 30-day spend</div>
+              <div class="value" id="t-spend">&ndash;</div>
+              <div class="foot">from Cost Explorer</div>
+            </div>
+          </div>
+
+          <div id="onboard" class="card onboard" hidden>
+            <h3>Connect your first cloud account</h3>
+            <p>ClearCloud needs read-only access to find wasted resources. It never changes anything in your account.
+            </p>
+            <button type="button" class="btn primary" data-goto="accounts">Connect an account</button>
+          </div>
+
+          <div class="grid-2">
+            <div class="card">
+              <h3>Savings by cloud</h3>
+              <div id="by-cloud"></div>
+            </div>
+            <div class="card">
+              <h3>Findings by type</h3>
+              <div id="by-type"></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <h3>Biggest savings</h3><button type="button" class="link" data-goto="findings">See all findings</button>
+            </div>
+            <div id="top-findings"></div>
+          </div>
+        </section>
+
+        <section data-view="findings" hidden>
+          <div class="toolbar">
+            <input id="f-search" type="search" placeholder="Search by name, resource or account"
+              aria-label="Search findings">
+            <select id="f-cloud" aria-label="Filter by cloud">
+              <option value="">All clouds</option>
+            </select>
+            <select id="f-type" aria-label="Filter by type">
+              <option value="">All types</option>
+            </select>
+            <select id="f-sort" aria-label="Sort findings">
+              <option value="savings">Sort: highest saving</option>
+              <option value="cloud">Sort: cloud</option>
+              <option value="type">Sort: type</option>
+            </select>
+          </div>
+          <div class="card flush" id="findings"></div>
+        </section>
+
+        <section data-view="accounts" hidden>
+          <div class="card-head page-head">
+            <p class="muted">Connect read-only accounts. Credentials for Azure and GCP are stored encrypted.</p>
+            <button id="toggle-form" class="btn" type="button">Connect account</button>
+          </div>
+          <div class="card flush" id="accounts"></div>
+
+          <div class="card" id="account-form-card" hidden>
+            <h3>Connect an account</h3>
+            <form id="form-account">
+              <div class="row">
+                <label>Cloud
+                  <select id="acc-provider">
+                    <option value="aws">AWS</option>
+                    <option value="azure">Azure</option>
+                    <option value="gcp">GCP</option>
+                  </select>
+                </label>
+                <label>Label <input id="acc-label" maxlength="60" placeholder="e.g. Team sandbox" required></label>
+              </div>
+
+              <div data-for="aws">
+                <label>Regions <input id="acc-regions" placeholder="us-east-1, us-west-2"></label>
+                <label>Role ARN <input id="acc-role"
+                    placeholder="arn:aws:iam::123456789012:role/ClearCloudReadOnly"></label>
+                <p class="hint">A read-only role in your AWS account that ClearCloud can assume. Leave empty to scan the
+                  account hosting ClearCloud (admins only).</p>
+              </div>
+
+              <div data-for="azure" hidden>
+                <div class="row">
+                  <label>Tenant ID <input id="az-tenant" autocomplete="off"></label>
+                  <label>Subscription ID <input id="az-sub" autocomplete="off"></label>
+                </div>
+                <div class="row">
+                  <label>Client (app) ID <input id="az-client" autocomplete="off"></label>
+                  <label>Client secret <input id="az-secret" type="password" autocomplete="off"></label>
+                </div>
+                <p class="hint">Use a service principal with the Reader role only.</p>
+              </div>
+
+              <div data-for="gcp" hidden>
+                <label>Service account key (JSON) <textarea id="acc-gcp" rows="5" autocomplete="off"></textarea></label>
+                <p class="hint">Use a service account with Compute Viewer and Monitoring Viewer only.</p>
+              </div>
+
+              <button type="submit" class="btn primary">Connect account</button>
+            </form>
+            <p id="acc-msg" class="msg" role="status"></p>
+          </div>
+        </section>
+
+        <section data-view="spend" hidden>
+          <div class="card">
+            <h3>AWS spend by service, last 30 days</h3>
+            <div id="spend"></div>
+          </div>
+        </section>
+      </main>
     </div>
+  </div>
 
-    <h2>AWS spend by service (last 30 days)</h2>
-    <div class="card" id="spend"></div>
-
-    <h2>Recommendations</h2>
-    <div class="card" id="findings"></div>
-  </section>
-</main>
-<script src="app.js"></script>
+  <script src="app.js"></script>
 </body>
+
 </html>
