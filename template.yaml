@@ -5,9 +5,10 @@ Description: ClearCloud - multi-tenant, serverless multi-cloud cost-waste scanne
 Parameters:
   LabRoleArn:
     Type: String
+    Default: ''
     Description: >
-      ARN of an existing IAM role the functions run as. Student sandboxes cannot create
-      IAM roles, so pass a role that already exists and that Lambda can assume.
+      Optional. ARN of an existing IAM role the functions run as (student sandboxes cannot create
+      IAM roles). Leave empty in a normal AWS account and the stack creates its own least-privilege role.
   JwtSecret:
     Type: String
     NoEcho: true
@@ -43,6 +44,7 @@ Parameters:
     Description: Create CloudWatch alarms. Off by default because some student sandboxes deny alarm creation
 
 Conditions:
+  CreateRole: !Equals [!Ref LabRoleArn, '']
   HasAlertEmail: !Not [!Equals [!Ref AlertEmail, '']]
   AlarmsOn: !Equals [!Ref EnableAlarms, 'true']
 
@@ -82,6 +84,58 @@ Resources:
         AttributeName: expires_at
         Enabled: true
 
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Condition: CreateRole
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: clearcloud-access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: Table
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:BatchWriteItem
+                Resource:
+                  - !GetAtt Table.Arn
+                  - !Sub ${Table.Arn}/index/*
+              - Sid: Topics
+                Effect: Allow
+                Action: sns:Publish
+                Resource:
+                  - !Ref ScanTopic
+                  - !Ref AlertTopic
+              - Sid: CloudSecrets
+                Effect: Allow
+                Action:
+                  - ssm:PutParameter
+                  - ssm:GetParameter
+                  - ssm:DeleteParameter
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/clearcloud/*
+              - Sid: ReadOnlyScan
+                Effect: Allow
+                Action:
+                  - ec2:Describe*
+                  - cloudwatch:GetMetricStatistics
+                  - ce:GetCostAndUsage
+                  - sts:AssumeRole
+                Resource: '*'
+
   ScanTopic:
     Type: AWS::SNS::Topic
     Properties:
@@ -106,7 +160,7 @@ Resources:
       FunctionName: clearcloud-api
       CodeUri: src/api/
       Handler: app.lambda_handler
-      Role: !Ref LabRoleArn
+      Role: !If [CreateRole, !GetAtt LambdaRole.Arn, !Ref LabRoleArn]
       FunctionUrlConfig:
         AuthType: NONE
       Environment:
@@ -125,7 +179,7 @@ Resources:
       FunctionName: clearcloud-dispatcher
       CodeUri: src/dispatcher/
       Handler: app.lambda_handler
-      Role: !Ref LabRoleArn
+      Role: !If [CreateRole, !GetAtt LambdaRole.Arn, !Ref LabRoleArn]
       Timeout: 60
       Environment:
         Variables:
@@ -146,7 +200,7 @@ Resources:
       FunctionName: clearcloud-scanner
       CodeUri: src/scanner/
       Handler: app.lambda_handler
-      Role: !Ref LabRoleArn
+      Role: !If [CreateRole, !GetAtt LambdaRole.Arn, !Ref LabRoleArn]
       Timeout: 300
       MemorySize: 512
       Environment:
@@ -357,12 +411,3 @@ Outputs:
   Region:
     Value: !Ref AWS::Region
   ScanTopicArn:
-    Value: !Ref ScanTopic
-  ApiFunctionUrl:
-    Value: !GetAtt ApiFunctionUrl.FunctionUrl
-  DispatcherFunctionName:
-    Value: !Ref DispatcherFunction
-  AlertTopicArn:
-    Value: !Ref AlertTopic
-  DashboardName:
-    Value: !Sub ${AWS::StackName}-monitoring
