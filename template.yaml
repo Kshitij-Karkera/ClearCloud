@@ -411,3 +411,13 @@ Outputs:
   Region:
     Value: !Ref AWS::Region
   ScanTopicArn:
+    Value: !Ref ScanTopic
+  ApiFunctionUrl:
+    Value: !GetAtt ApiFunctionUrl.FunctionUrl
+  DispatcherFunctionName:
+    Value: !Ref DispatcherFunction
+  AlertTopicArn:
+    Value: !Ref AlertTopic
+  DashboardName:
+    Value: !Sub ${AWS::StackName}-monitoring
+    
