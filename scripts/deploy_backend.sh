@@ -5,11 +5,13 @@ set -euo pipefail
 #   role-arn : AWS Academy sandbox. Uses that existing role and passes your session credentials to the Lambdas.
 #   create   : normal AWS account. The stack creates its own least-privilege role; no credentials are copied.
 #   ENABLE_ALARMS=true keeps the CloudWatch alarms.
+#   OPEN_HOST_SCAN=true lets every signed-in user scan the account that hosts ClearCloud (class demo only).
 STACK="${1:-clearcloud}"
 ROLE_ARN="${2:-}"
 ADMIN_EMAILS="${3:-}"
 ALERT_EMAIL="${4:-}"
 ENABLE_ALARMS="${ENABLE_ALARMS:-false}"
+OPEN_HOST_SCAN="${OPEN_HOST_SCAN:-false}"
 if [ -z "$ROLE_ARN" ]; then
   echo "usage: ./scripts/deploy_backend.sh <stack-name> <role-arn|create> [admin-email] [alert-email]   (set ENABLE_ALARMS=true to create CloudWatch alarms)" >&2
   exit 1
@@ -30,6 +32,7 @@ OVERRIDES=(
   "AdminEmails=$ADMIN_EMAILS"
   "AlertEmail=$ALERT_EMAIL"
   "EnableAlarms=$ENABLE_ALARMS"
+  "OpenHostScan=$OPEN_HOST_SCAN"
 )
 
 if [ "$ROLE_ARN" = "create" ]; then

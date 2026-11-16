@@ -18,6 +18,11 @@ Parameters:
     Type: String
     Default: ''
     Description: Comma-separated emails that get admin rights (may scan the account that hosts ClearCloud)
+  OpenHostScan:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: If true, every signed-in user may scan the account that hosts ClearCloud (for a class demo). Keep false otherwise.
   AwsAccessKeyId:
     Type: String
     NoEcho: true
@@ -169,6 +174,7 @@ Resources:
           TOPIC_ARN: !Ref ScanTopic
           JWT_SECRET: !Ref JwtSecret
           ADMIN_EMAILS: !Ref AdminEmails
+          OPEN_HOST_SCAN: !Ref OpenHostScan
           CC_ACCESS_KEY_ID: !Ref AwsAccessKeyId
           CC_SECRET_ACCESS_KEY: !Ref AwsSecretAccessKey
           CC_SESSION_TOKEN: !Ref AwsSessionToken
@@ -420,4 +426,3 @@ Outputs:
     Value: !Ref AlertTopic
   DashboardName:
     Value: !Sub ${AWS::StackName}-monitoring
-    
