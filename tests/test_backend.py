@@ -443,6 +443,16 @@ class ApiFlowTest(unittest.TestCase):
         status, _ = call("POST", "/api/accounts", {"provider": "aws", "label": "Host"}, body["token"])
         self.assertEqual(status, 403)
 
+    def test_host_account_open_to_everyone_when_demo_flag_is_on(self):
+        _, body = self.register()
+        old = api_app.OPEN_HOST_SCAN
+        api_app.OPEN_HOST_SCAN = True
+        try:
+            status, _ = call("POST", "/api/accounts", {"provider": "aws", "label": "Host"}, body["token"])
+        finally:
+            api_app.OPEN_HOST_SCAN = old
+        self.assertEqual(status, 201)
+
 
 if __name__ == "__main__":
     unittest.main()
