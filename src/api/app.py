@@ -19,6 +19,10 @@ ADMIN_EMAILS = {
     e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()
 }
 
+# When true, any signed-in user may connect the account that hosts ClearCloud (class demo mode).
+OPEN_HOST_SCAN = os.environ.get(
+    "OPEN_HOST_SCAN", "false").strip().lower() == "true"
+
 _clients = {}
 
 
@@ -61,7 +65,8 @@ def _user(event):
     try:
         claims = auth.verify_token(header[7:].strip(), _secret())
     except auth.AuthError:
-        raise logic.ApiError(401, "Your session expired. Please sign in again.")
+        raise logic.ApiError(
+            401, "Your session expired. Please sign in again.")
     return {
         "sub": claims["sub"],
         "email": claims.get("email", ""),
@@ -89,7 +94,8 @@ def _body(event):
 def _query(pk, prefix):
     from boto3.dynamodb.conditions import Key
 
-    kwargs = {"KeyConditionExpression": Key("pk").eq(pk) & Key("sk").begins_with(prefix)}
+    kwargs = {"KeyConditionExpression": Key(
+        "pk").eq(pk) & Key("sk").begins_with(prefix)}
     items = []
     while True:
         resp = _table().query(**kwargs)
@@ -128,7 +134,8 @@ def register(body):
     except Exception as exc:
         code = getattr(exc, "response", {}).get("Error", {}).get("Code")
         if code == "ConditionalCheckFailedException":
-            raise logic.ApiError(409, "An account with that email already exists")
+            raise logic.ApiError(
+                409, "An account with that email already exists")
         raise
     return 201, {"token": _issue_token(profile), "email": email}
 
@@ -146,7 +153,8 @@ def login(body):
     key = {"pk": f"AUTH#{email}", "sk": "PROFILE"}
     profile = _table().get_item(Key=key).get("Item")
     if profile and int(profile.get("locked_until", 0)) > time.time():
-        raise logic.ApiError(429, "Too many failed attempts. Try again in a few minutes.")
+        raise logic.ApiError(
+            429, "Too many failed attempts. Try again in a few minutes.")
     if not profile:
         auth.waste_time(password)
         raise logic.ApiError(401, "Incorrect email or password")
@@ -161,7 +169,8 @@ def login(body):
             _table().update_item(
                 Key=key,
                 UpdateExpression="SET locked_until = :until REMOVE fails",
-                ExpressionAttributeValues={":until": int(time.time()) + auth.LOCKOUT_SECONDS},
+                ExpressionAttributeValues={":until": int(
+                    time.time()) + auth.LOCKOUT_SECONDS},
             )
         raise logic.ApiError(401, "Incorrect email or password")
     if profile.get("fails") or profile.get("locked_until"):
@@ -176,10 +185,11 @@ def list_accounts(user):
 
 
 def create_account(user, body):
-    cleaned = logic.validate_account(body, user["is_admin"])
+    cleaned = logic.validate_account(body, user["is_admin"] or OPEN_HOST_SCAN)
     pk = f"USER#{user['sub']}"
     if len(_query(pk, "ACCOUNT#")) >= logic.MAX_ACCOUNTS:
-        raise logic.ApiError(409, f"You can connect up to {logic.MAX_ACCOUNTS} accounts")
+        raise logic.ApiError(
+            409, f"You can connect up to {logic.MAX_ACCOUNTS} accounts")
 
     account_id = uuid.uuid4().hex[:12]
     item = {
