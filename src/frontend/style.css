@@ -418,6 +418,21 @@ textarea {
     margin-bottom: 0;
 }
 
+.alerts {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+}
+
+.alerts h3 {
+    margin-bottom: 4px;
+}
+
+.alerts .btn {
+    flex: none;
+}
+
 .page-head {
     margin-bottom: 0;
 }
@@ -1044,6 +1059,11 @@ textarea {
 
     .row {
         grid-template-columns: 1fr;
+    }
+
+    .alerts {
+        flex-direction: column;
+        align-items: stretch;
     }
 
     .account .top {

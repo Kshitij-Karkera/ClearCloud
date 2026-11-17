@@ -197,6 +197,14 @@
             <p class="muted">Connect read-only accounts. Credentials for Azure and GCP are stored encrypted.</p>
             <button id="toggle-form" class="btn" type="button">Connect account</button>
           </div>
+          <div class="card alerts" id="alerts-card" hidden>
+            <div>
+              <h3>Email alerts</h3>
+              <p id="alerts-text" class="muted"></p>
+              <p id="alerts-msg" class="msg" role="status"></p>
+            </div>
+            <button id="alerts-btn" class="btn" type="button"></button>
+          </div>
           <div class="card flush" id="accounts"></div>
 
           <div class="card" id="account-form-card" hidden>

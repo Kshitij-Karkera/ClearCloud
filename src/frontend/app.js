@@ -84,6 +84,7 @@ function showView(name) {
   });
   $("page-title").textContent = VIEW_TITLES[name];
   try { history.replaceState(null, "", "#" + name); } catch (e) { }
+  if (name === "accounts" && !$("app").hidden) loadAlerts();
 }
 
 function wireNav() {
@@ -225,6 +226,62 @@ function renderAccounts(accounts) {
       wrap.appendChild(el("div", "meta", "Scans the account that hosts ClearCloud"));
     }
     box.appendChild(wrap);
+  });
+}
+
+/* ---------- email alerts ---------- */
+
+let alertState = "off";
+
+function renderAlerts(data) {
+  alertState = data.state;
+  const text = $("alerts-text");
+  const btn = $("alerts-btn");
+  if (data.state === "on") {
+    text.textContent = "Alerts are on. ClearCloud emails " + data.email + " when it finds new waste in your accounts.";
+    btn.textContent = "Turn off";
+  } else if (data.state === "pending") {
+    text.textContent = "Almost done. Open the email AWS sent to " + data.email + " and click Confirm subscription.";
+    btn.textContent = "I confirmed it";
+  } else {
+    text.textContent = "Get an email at " + data.email + " when ClearCloud finds new waste in your accounts.";
+    btn.textContent = "Turn on email alerts";
+  }
+  $("alerts-card").hidden = false;
+}
+
+async function loadAlerts() {
+  if (config.demo) return;
+  try {
+    renderAlerts(await api("/api/alerts"));
+  } catch (err) {
+    $("alerts-card").hidden = true;
+  }
+}
+
+function wireAlerts() {
+  $("alerts-btn").addEventListener("click", async () => {
+    const btn = $("alerts-btn");
+    btn.disabled = true;
+    setMessage("alerts-msg", "");
+    try {
+      if (alertState === "off") {
+        const data = await api("/api/alerts", { method: "POST", body: "{}" });
+        renderAlerts(data);
+        setMessage("alerts-msg", "Check your inbox for the confirmation email from AWS.", "ok");
+      } else if (alertState === "pending") {
+        const data = await api("/api/alerts");
+        renderAlerts(data);
+        if (data.state === "pending") setMessage("alerts-msg", "Not confirmed yet. Click the link in the AWS email first.", "error");
+      } else {
+        renderAlerts(await api("/api/alerts", { method: "DELETE" }));
+        setMessage("alerts-msg", "Email alerts are off.", "ok");
+      }
+    } catch (err) {
+      setMessage("alerts-msg", err.message, "error");
+    } finally {
+      btn.disabled = false;
+    }
   });
 }
 
@@ -542,6 +599,7 @@ async function start() {
   }
   wireAuth();
   wireNav();
+  wireAlerts();
   wireFindings();
   wireApp();
 
