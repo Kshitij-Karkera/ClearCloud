@@ -117,6 +117,14 @@ def process(message, now):
     if not account:
         return
 
+    if account.get("verified") is False:
+        _table().update_item(
+            Key=key,
+            UpdateExpression="SET last_status = :s",
+            ExpressionAttributeValues={":s": "waiting for verification"},
+        )
+        return
+
     try:
         inventory, spend, ce_status, errors = collect_for_account(account, now)
     except Exception as exc:

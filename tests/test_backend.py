@@ -57,7 +57,8 @@ def gcp_key(**overrides):
 class ValidateAccountTest(unittest.TestCase):
     def test_aws_with_role_is_allowed_for_anyone(self):
         out = logic.validate_account(
-            {"provider": "aws", "label": "Team", "regions": "us-east-1, us-west-2", "role_arn": ROLE},
+            {"provider": "aws", "label": "Team",
+                "regions": "us-east-1, us-west-2", "role_arn": ROLE},
             is_admin=False,
         )
         self.assertEqual(out["regions"], ["us-east-1", "us-west-2"])
@@ -68,14 +69,16 @@ class ValidateAccountTest(unittest.TestCase):
         with self.assertRaises(logic.ApiError) as ctx:
             logic.validate_account(body, is_admin=False)
         self.assertEqual(ctx.exception.status, 403)
-        self.assertEqual(logic.validate_account(body, is_admin=True)["role_arn"], "")
+        self.assertEqual(logic.validate_account(
+            body, is_admin=True)["role_arn"], "")
 
     def test_rejects_bad_inputs(self):
         bad = [
             {"provider": "oracle", "label": "x"},
             {"provider": "aws", "label": ""},
             {"provider": "aws", "label": "x", "role_arn": "not-an-arn"},
-            {"provider": "aws", "label": "x", "role_arn": ROLE, "regions": ["../etc"]},
+            {"provider": "aws", "label": "x",
+                "role_arn": ROLE, "regions": ["../etc"]},
             {"provider": "aws", "label": "x" * 61, "role_arn": ROLE},
         ]
         for body in bad:
@@ -86,23 +89,28 @@ class ValidateAccountTest(unittest.TestCase):
             logic.validate_account("nope", is_admin=True)
 
     def test_azure_credentials(self):
-        creds = {"tenant_id": GUID, "client_id": GUID, "client_secret": "s3cret", "subscription_id": GUID}
-        out = logic.validate_account({"provider": "azure", "label": "Az", "credentials": creds}, False)
+        creds = {"tenant_id": GUID, "client_id": GUID,
+                 "client_secret": "s3cret", "subscription_id": GUID}
+        out = logic.validate_account(
+            {"provider": "azure", "label": "Az", "credentials": creds}, False)
         self.assertEqual(out["credentials"]["client_secret"], "s3cret")
         creds["tenant_id"] = "not-a-guid"
         with self.assertRaises(logic.ApiError):
-            logic.validate_account({"provider": "azure", "label": "Az", "credentials": creds}, False)
+            logic.validate_account(
+                {"provider": "azure", "label": "Az", "credentials": creds}, False)
         with self.assertRaises(logic.ApiError):
             logic.validate_account({"provider": "azure", "label": "Az"}, False)
 
     def test_gcp_credentials_accept_json_text_or_object(self):
         as_text = json.dumps(gcp_key())
         for creds in (as_text, gcp_key()):
-            out = logic.validate_account({"provider": "gcp", "label": "G", "credentials": creds}, False)
+            out = logic.validate_account(
+                {"provider": "gcp", "label": "G", "credentials": creds}, False)
             self.assertEqual(out["credentials"]["project_id"], "p")
         for creds in ("{not json", gcp_key(type="authorized_user"), {"type": "service_account"}):
             with self.assertRaises(logic.ApiError):
-                logic.validate_account({"provider": "gcp", "label": "G", "credentials": creds}, False)
+                logic.validate_account(
+                    {"provider": "gcp", "label": "G", "credentials": creds}, False)
 
 
 class AccountViewTest(unittest.TestCase):
@@ -117,7 +125,8 @@ class AccountViewTest(unittest.TestCase):
         self.assertEqual(view["label"], "Az")
 
     def test_role_accounts_show_external_id(self):
-        item = {"account_id": "a", "provider": "aws", "label": "L", "role_arn": ROLE, "external_id": "abc"}
+        item = {"account_id": "a", "provider": "aws",
+                "label": "L", "role_arn": ROLE, "external_id": "abc"}
         self.assertEqual(logic.account_public_view(item)["external_id"], "abc")
 
 
@@ -125,11 +134,13 @@ class ScanCooldownTest(unittest.TestCase):
     def test_should_enqueue(self):
         now = datetime(2026, 10, 12, 12, 0, tzinfo=timezone.utc)
         self.assertTrue(logic.should_enqueue({}, now))
-        recent = {"scan_requested_at": (now - timedelta(seconds=10)).isoformat()}
+        recent = {"scan_requested_at": (
+            now - timedelta(seconds=10)).isoformat()}
         old = {"scan_requested_at": (now - timedelta(seconds=120)).isoformat()}
         self.assertFalse(logic.should_enqueue(recent, now))
         self.assertTrue(logic.should_enqueue(old, now))
-        self.assertTrue(logic.should_enqueue({"scan_requested_at": "garbage"}, now))
+        self.assertTrue(logic.should_enqueue(
+            {"scan_requested_at": "garbage"}, now))
 
 
 class MergeReportsTest(unittest.TestCase):
@@ -148,12 +159,16 @@ class MergeReportsTest(unittest.TestCase):
 
     def test_merge_sorts_sums_and_prefixes_errors(self):
         reports = [
-            self._report("aws", "A", 5.0, [{"service": "EC2", "cost": 10.0}], "ok", at="2026-10-12T09:00:00+00:00"),
-            self._report("gcp", "G", 9.0, errors=["boom"], at="2026-10-12T11:00:00+00:00"),
-            self._report("aws", "B", 1.0, [{"service": "EC2", "cost": 2.5}], "ok"),
+            self._report("aws", "A", 5.0, [
+                         {"service": "EC2", "cost": 10.0}], "ok", at="2026-10-12T09:00:00+00:00"),
+            self._report("gcp", "G", 9.0, errors=[
+                         "boom"], at="2026-10-12T11:00:00+00:00"),
+            self._report("aws", "B", 1.0, [
+                         {"service": "EC2", "cost": 2.5}], "ok"),
         ]
         merged = logic.merge_reports(reports)
-        self.assertEqual([f["est_monthly_savings"] for f in merged["findings"]], [9.0, 5.0, 1.0])
+        self.assertEqual([f["est_monthly_savings"]
+                         for f in merged["findings"]], [9.0, 5.0, 1.0])
         self.assertEqual(merged["summary"]["total_est_monthly_savings"], 15.0)
         self.assertEqual(merged["summary"]["by_provider"]["aws"]["count"], 2)
         self.assertEqual(merged["spend"], [{"service": "EC2", "cost": 12.5}])
@@ -169,8 +184,10 @@ class MergeReportsTest(unittest.TestCase):
         self.assertEqual(merged["summary"]["count"], 0)
 
     def test_cost_explorer_status_precedence(self):
-        self.assertEqual(logic.cost_explorer_status(["not requested", "unavailable: X"]), "unavailable: X")
-        self.assertEqual(logic.cost_explorer_status(["unavailable: X", "ok"]), "ok")
+        self.assertEqual(logic.cost_explorer_status(
+            ["not requested", "unavailable: X"]), "unavailable: X")
+        self.assertEqual(logic.cost_explorer_status(
+            ["unavailable: X", "ok"]), "ok")
         self.assertEqual(logic.cost_explorer_status([]), "not requested")
 
 
@@ -181,15 +198,19 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual([len(b) for b in batches], [10, 10, 5])
         entries = dispatch_logic.build_entries(batches[2])
         self.assertEqual([e["Id"] for e in entries], ["0", "1", "2", "3", "4"])
-        self.assertEqual(json.loads(entries[0]["Message"]), {"pk": "USER#20", "sk": "ACCOUNT#a"})
+        self.assertEqual(json.loads(entries[0]["Message"]), {
+                         "pk": "USER#20", "sk": "ACCOUNT#a"})
 
 
 class ReportingTest(unittest.TestCase):
-    ACCOUNT = {"pk": "USER#u", "account_id": "abc123abc123", "label": "Prod", "provider": "aws"}
+    ACCOUNT = {"pk": "USER#u", "account_id": "abc123abc123",
+               "label": "Prod", "provider": "aws"}
 
     def test_report_item_tags_findings_and_truncates(self):
-        findings = [{"id": str(i), "est_monthly_savings": 1.0} for i in range(reporting.MAX_FINDINGS_STORED + 5)]
-        item = reporting.build_report_item(self.ACCOUNT, "t", findings, {"count": 1}, [], "ok", [])
+        findings = [{"id": str(i), "est_monthly_savings": 1.0}
+                    for i in range(reporting.MAX_FINDINGS_STORED + 5)]
+        item = reporting.build_report_item(self.ACCOUNT, "t", findings, {
+                                           "count": 1}, [], "ok", [])
         stored = json.loads(item["findings_json"])
         self.assertEqual(len(stored), reporting.MAX_FINDINGS_STORED)
         self.assertEqual(stored[0]["account_label"], "Prod")
@@ -198,8 +219,10 @@ class ReportingTest(unittest.TestCase):
         self.assertNotIn("account_label", findings[0])
 
     def test_history_item_has_ttl(self):
-        item = reporting.build_history_item(self.ACCOUNT, "2026-10-12T10:00:00+00:00", 1000.7, 42.5)
-        self.assertEqual(item["expires_at"], 1000 + reporting.HISTORY_TTL_DAYS * 86400)
+        item = reporting.build_history_item(
+            self.ACCOUNT, "2026-10-12T10:00:00+00:00", 1000.7, 42.5)
+        self.assertEqual(item["expires_at"], 1000 +
+                         reporting.HISTORY_TTL_DAYS * 86400)
         self.assertTrue(item["sk"].startswith("HIST#abc123abc123#"))
         self.assertEqual(json.loads(item["total_json"]), 42.5)
 
@@ -207,13 +230,16 @@ class ReportingTest(unittest.TestCase):
 class SessionHelperTest(unittest.TestCase):
     def test_credentials_from_env(self):
         self.assertEqual(cc_session.credentials_from_env({}), {})
-        env = {"CC_ACCESS_KEY_ID": "AK", "CC_SECRET_ACCESS_KEY": "SK", "CC_SESSION_TOKEN": "TK"}
+        env = {"CC_ACCESS_KEY_ID": "AK",
+               "CC_SECRET_ACCESS_KEY": "SK", "CC_SESSION_TOKEN": "TK"}
         self.assertEqual(
             cc_session.credentials_from_env(env),
-            {"aws_access_key_id": "AK", "aws_secret_access_key": "SK", "aws_session_token": "TK"},
+            {"aws_access_key_id": "AK", "aws_secret_access_key": "SK",
+                "aws_session_token": "TK"},
         )
         env["CC_SESSION_TOKEN"] = ""
-        self.assertIsNone(cc_session.credentials_from_env(env)["aws_session_token"])
+        self.assertIsNone(cc_session.credentials_from_env(env)[
+                          "aws_session_token"])
 
 
 class ScannerEventTest(unittest.TestCase):
@@ -226,15 +252,19 @@ class ScannerEventTest(unittest.TestCase):
     def test_sns_event_is_unwrapped(self):
         seen = []
         scanner_app.process = lambda message, now: seen.append(message)
-        event = {"Records": [{"Sns": {"Message": json.dumps({"pk": "a", "sk": "1"})}}]}
-        self.assertEqual(scanner_app.lambda_handler(event, None), {"processed": 1})
+        event = {"Records": [
+            {"Sns": {"Message": json.dumps({"pk": "a", "sk": "1"})}}]}
+        self.assertEqual(scanner_app.lambda_handler(
+            event, None), {"processed": 1})
         self.assertEqual(seen, [{"pk": "a", "sk": "1"}])
 
     def test_direct_invoke_and_empty_event(self):
         seen = []
         scanner_app.process = lambda message, now: seen.append(message)
-        self.assertEqual(scanner_app.lambda_handler({"pk": "a", "sk": "1"}, None), {"processed": 1})
-        self.assertEqual(scanner_app.lambda_handler({}, None), {"processed": 0})
+        self.assertEqual(scanner_app.lambda_handler(
+            {"pk": "a", "sk": "1"}, None), {"processed": 1})
+        self.assertEqual(scanner_app.lambda_handler(
+            {}, None), {"processed": 0})
         self.assertEqual(len(seen), 1)
 
     def test_failures_are_raised_so_lambda_retries(self):
@@ -242,7 +272,8 @@ class ScannerEventTest(unittest.TestCase):
             raise RuntimeError("boom")
 
         scanner_app.process = boom
-        event = {"Records": [{"Sns": {"Message": json.dumps({"pk": "a", "sk": "1"})}}]}
+        event = {"Records": [
+            {"Sns": {"Message": json.dumps({"pk": "a", "sk": "1"})}}]}
         with contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(RuntimeError):
                 scanner_app.lambda_handler(event, None)
@@ -250,10 +281,14 @@ class ScannerEventTest(unittest.TestCase):
 
 class RouteTest(unittest.TestCase):
     def test_known_routes(self):
-        self.assertEqual(logic.match_route("POST", "/api/auth/login"), ("login", (), False))
-        self.assertEqual(logic.match_route("GET", "/api/report/"), ("report", (), True))
-        name, params, needs_auth = logic.match_route("DELETE", "/api/accounts/0123456789ab")
-        self.assertEqual((name, params, needs_auth), ("delete_account", ("0123456789ab",), True))
+        self.assertEqual(logic.match_route(
+            "POST", "/api/auth/login"), ("login", (), False))
+        self.assertEqual(logic.match_route(
+            "GET", "/api/report/"), ("report", (), True))
+        name, params, needs_auth = logic.match_route(
+            "DELETE", "/api/accounts/0123456789ab")
+        self.assertEqual((name, params, needs_auth),
+                         ("delete_account", ("0123456789ab",), True))
 
     def test_unknown_routes_are_404(self):
         for method, path in (("GET", "/api/nope"), ("PUT", "/api/accounts"), ("DELETE", "/api/accounts/../x")):
@@ -275,21 +310,25 @@ class AuthTest(unittest.TestCase):
             with self.assertRaises(auth.AuthError, msg=str(bad)):
                 auth.validate_password(bad)
         self.assertEqual(auth.validate_password("Passw0rdOK"), "Passw0rdOK")
-        self.assertEqual(auth.normalize_email("  Me@Example.COM "), "me@example.com")
+        self.assertEqual(auth.normalize_email(
+            "  Me@Example.COM "), "me@example.com")
         for bad in ("nope", "a@b", "a b@c.com", 5):
             with self.assertRaises(auth.AuthError):
                 auth.normalize_email(bad)
 
     def test_token_round_trip_and_expiry(self):
-        token = auth.sign_token({"sub": "u1", "email": "a@b.co"}, "k" * 32, now=1000, ttl=60)
-        self.assertEqual(auth.verify_token(token, "k" * 32, now=1030)["sub"], "u1")
+        token = auth.sign_token(
+            {"sub": "u1", "email": "a@b.co"}, "k" * 32, now=1000, ttl=60)
+        self.assertEqual(auth.verify_token(
+            token, "k" * 32, now=1030)["sub"], "u1")
         with self.assertRaises(auth.AuthError):
             auth.verify_token(token, "k" * 32, now=1061)
 
     def test_tampered_tokens_are_rejected(self):
         token = auth.sign_token({"sub": "u1"}, "k" * 32, now=1000, ttl=600)
         head, body, sig = token.split(".")
-        forged_body = auth._b64(json.dumps({"sub": "admin", "exp": 9999999999}).encode())
+        forged_body = auth._b64(json.dumps(
+            {"sub": "admin", "exp": 9999999999}).encode())
         none_head = auth._b64(json.dumps({"alg": "none"}).encode())
         for bad in (
             token[:-2] + "xx",
@@ -316,7 +355,8 @@ class FakeTable:
         key = (Item["pk"], Item["sk"])
         if ConditionExpression and key in self.items:
             err = Exception("exists")
-            err.response = {"Error": {"Code": "ConditionalCheckFailedException"}}
+            err.response = {
+                "Error": {"Code": "ConditionalCheckFailedException"}}
             raise err
         self.items[key] = dict(Item)
 
@@ -324,7 +364,15 @@ class FakeTable:
         self.items.pop((Key["pk"], Key["sk"]), None)
 
     def update_item(self, Key, UpdateExpression, ExpressionAttributeValues=None, ReturnValues=None):
+        if UpdateExpression.startswith("ADD n"):
+            item = self.items.setdefault((Key["pk"], Key["sk"]), dict(Key))
+            item["n"] = item.get("n", 0) + 1
+            return {"Attributes": {"n": item["n"]}}
         item = self.items[(Key["pk"], Key["sk"])]
+        if UpdateExpression.startswith("SET verified"):
+            item["verified"] = ExpressionAttributeValues[":v"]
+            item["last_status"] = ExpressionAttributeValues[":s"]
+            return {}
         if UpdateExpression.startswith("ADD fails"):
             item["fails"] = item.get("fails", 0) + 1
             return {"Attributes": {"fails": item["fails"]}}
@@ -374,7 +422,8 @@ class FakeSns:
 
     def list_subscriptions_by_topic(self, TopicArn, NextToken=None):
         return {"Subscriptions": [
-            {"Endpoint": x["Endpoint"], "Protocol": x["Protocol"], "SubscriptionArn": x["SubscriptionArn"]}
+            {"Endpoint": x["Endpoint"], "Protocol": x["Protocol"],
+                "SubscriptionArn": x["SubscriptionArn"]}
             for x in self._subs()]}
 
     def get_subscription_attributes(self, SubscriptionArn):
@@ -384,11 +433,13 @@ class FakeSns:
         return {"Attributes": {}}
 
     def unsubscribe(self, SubscriptionArn):
-        self.subscriptions = [x for x in self._subs() if x["SubscriptionArn"] != SubscriptionArn]
+        self.subscriptions = [x for x in self._subs(
+        ) if x["SubscriptionArn"] != SubscriptionArn]
 
 
 def call(method, path, body=None, token=None):
-    event = {"requestContext": {"http": {"method": method}}, "rawPath": path, "headers": {}}
+    event = {"requestContext": {"http": {"method": method}},
+             "rawPath": path, "headers": {}}
     if token:
         event["headers"]["authorization"] = "Bearer " + token
     if body is not None:
@@ -420,8 +471,10 @@ class ApiFlowTest(unittest.TestCase):
         claims = auth.verify_token(body["token"], os.environ["JWT_SECRET"])
         self.assertEqual(claims["email"], "me@example.com")
         self.assertFalse(claims["adm"])
-        self.assertNotIn("Passw0rdOK", json.dumps(list(self.table.items.values())))
-        status, body = call("POST", "/api/auth/login", {"email": "ME@example.com", "password": "Passw0rdOK"})
+        self.assertNotIn("Passw0rdOK", json.dumps(
+            list(self.table.items.values())))
+        status, body = call("POST", "/api/auth/login",
+                            {"email": "ME@example.com", "password": "Passw0rdOK"})
         self.assertEqual(status, 200)
         self.assertIn("token", body)
 
@@ -433,24 +486,31 @@ class ApiFlowTest(unittest.TestCase):
 
     def test_admin_email_gets_admin_claim(self):
         _, body = self.register("boss@example.com")
-        self.assertTrue(auth.verify_token(body["token"], os.environ["JWT_SECRET"])["adm"])
+        self.assertTrue(auth.verify_token(
+            body["token"], os.environ["JWT_SECRET"])["adm"])
 
     def test_wrong_password_is_generic_and_locks_after_five_failures(self):
         self.register()
         for _ in range(auth.MAX_FAILED_LOGINS):
-            status, body = call("POST", "/api/auth/login", {"email": "me@example.com", "password": "Wrong0Pass"})
-            self.assertEqual((status, body["error"]), (401, "Incorrect email or password"))
-        status, _ = call("POST", "/api/auth/login", {"email": "me@example.com", "password": "Passw0rdOK"})
+            status, body = call(
+                "POST", "/api/auth/login", {"email": "me@example.com", "password": "Wrong0Pass"})
+            self.assertEqual(
+                (status, body["error"]), (401, "Incorrect email or password"))
+        status, _ = call("POST", "/api/auth/login",
+                         {"email": "me@example.com", "password": "Passw0rdOK"})
         self.assertEqual(status, 429)
 
     def test_unknown_user_gets_same_error_as_wrong_password(self):
-        status, body = call("POST", "/api/auth/login", {"email": "ghost@example.com", "password": "Passw0rdOK"})
-        self.assertEqual((status, body["error"]), (401, "Incorrect email or password"))
+        status, body = call("POST", "/api/auth/login",
+                            {"email": "ghost@example.com", "password": "Passw0rdOK"})
+        self.assertEqual((status, body["error"]),
+                         (401, "Incorrect email or password"))
 
     def test_protected_routes_need_a_valid_token(self):
         self.assertEqual(call("GET", "/api/report")[0], 401)
         self.assertEqual(call("GET", "/api/accounts", token="garbage")[0], 401)
-        expired = auth.sign_token({"sub": "u"}, os.environ["JWT_SECRET"], now=1, ttl=1)
+        expired = auth.sign_token(
+            {"sub": "u"}, os.environ["JWT_SECRET"], now=1, ttl=1)
         self.assertEqual(call("GET", "/api/accounts", token=expired)[0], 401)
         self.assertEqual(call("GET", "/api/nope")[0], 404)
 
@@ -466,7 +526,8 @@ class ApiFlowTest(unittest.TestCase):
         self.assertEqual((status, body), (202, {"queued": 2, "skipped": 0}))
         topic, entries = self.sns.batches[0]
         self.assertEqual(topic, os.environ["TOPIC_ARN"])
-        self.assertEqual(sorted(json.loads(e["Message"])["sk"] for e in entries), ["ACCOUNT#0", "ACCOUNT#1"])
+        self.assertEqual(sorted(json.loads(e["Message"])["sk"] for e in entries), [
+                         "ACCOUNT#0", "ACCOUNT#1"])
         status, body = call("POST", "/api/scan", {}, token)
         self.assertEqual((status, body), (202, {"queued": 0, "skipped": 2}))
         self.assertEqual(len(self.sns.batches), 1)
@@ -476,13 +537,15 @@ class ApiFlowTest(unittest.TestCase):
         token = body["token"]
         self.assertEqual(call("POST", "/api/scan", {}, token)[0], 400)
         sub = auth.verify_token(token, os.environ["JWT_SECRET"])["sub"]
-        self.table.items[(f"USER#{sub}", "ACCOUNT#0")] = {"pk": f"USER#{sub}", "sk": "ACCOUNT#0"}
+        self.table.items[(f"USER#{sub}", "ACCOUNT#0")] = {
+            "pk": f"USER#{sub}", "sk": "ACCOUNT#0"}
         self.sns.failed = [{"Id": "0"}]
         self.assertEqual(call("POST", "/api/scan", {}, token)[0], 502)
 
     def test_host_account_is_admin_only(self):
         _, body = self.register()
-        status, _ = call("POST", "/api/accounts", {"provider": "aws", "label": "Host"}, body["token"])
+        status, _ = call("POST", "/api/accounts",
+                         {"provider": "aws", "label": "Host"}, body["token"])
         self.assertEqual(status, 403)
 
     def test_host_account_open_to_everyone_when_demo_flag_is_on(self):
@@ -490,7 +553,8 @@ class ApiFlowTest(unittest.TestCase):
         old = api_app.OPEN_HOST_SCAN
         api_app.OPEN_HOST_SCAN = True
         try:
-            status, _ = call("POST", "/api/accounts", {"provider": "aws", "label": "Host"}, body["token"])
+            status, _ = call("POST", "/api/accounts",
+                             {"provider": "aws", "label": "Host"}, body["token"])
         finally:
             api_app.OPEN_HOST_SCAN = old
         self.assertEqual(status, 201)
@@ -502,19 +566,24 @@ class ApiFlowTest(unittest.TestCase):
         self._alerts_on()
         _, body = self.register()
         token = body["token"]
-        self.assertEqual(call("GET", "/api/alerts", token=token)[1]["state"], "off")
+        self.assertEqual(
+            call("GET", "/api/alerts", token=token)[1]["state"], "off")
         status, data = call("POST", "/api/alerts", {}, token)
         self.assertEqual((status, data["state"]), (202, "pending"))
         sub = auth.verify_token(token, os.environ["JWT_SECRET"])["sub"]
-        policy = json.loads(self.sns.subscriptions[0]["Attributes"]["FilterPolicy"])
+        policy = json.loads(
+            self.sns.subscriptions[0]["Attributes"]["FilterPolicy"])
         self.assertEqual(policy, {"owner": [sub]})
-        self.assertEqual(call("GET", "/api/alerts", token=token)[1]["state"], "pending")
+        self.assertEqual(call("GET", "/api/alerts", token=token)
+                         [1]["state"], "pending")
         self.sns.confirm("me@example.com")
-        self.assertEqual(call("GET", "/api/alerts", token=token)[1]["state"], "on")
+        self.assertEqual(
+            call("GET", "/api/alerts", token=token)[1]["state"], "on")
         status, data = call("DELETE", "/api/alerts", token=token)
         self.assertEqual((status, data["state"]), (200, "off"))
         self.assertEqual(self.sns.subscriptions, [])
-        self.assertEqual(call("GET", "/api/alerts", token=token)[1]["state"], "off")
+        self.assertEqual(
+            call("GET", "/api/alerts", token=token)[1]["state"], "off")
 
     def test_turning_alerts_on_twice_does_not_subscribe_twice(self):
         self._alerts_on()
@@ -530,8 +599,10 @@ class ApiFlowTest(unittest.TestCase):
         _, second = self.register("b@example.com")
         call("POST", "/api/alerts", {}, first["token"])
         self.sns.confirm("a@example.com")
-        self.assertEqual(call("GET", "/api/alerts", token=first["token"])[1]["state"], "on")
-        self.assertEqual(call("GET", "/api/alerts", token=second["token"])[1]["state"], "off")
+        self.assertEqual(
+            call("GET", "/api/alerts", token=first["token"])[1]["state"], "on")
+        self.assertEqual(
+            call("GET", "/api/alerts", token=second["token"])[1]["state"], "off")
 
     def test_email_that_already_gets_every_alert_is_refused_clearly(self):
         self._alerts_on()

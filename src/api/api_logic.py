@@ -25,6 +25,7 @@ ROUTES = (
     ("GET", r"/api/accounts", "list_accounts", True),
     ("POST", r"/api/accounts", "create_account", True),
     ("DELETE", r"/api/accounts/([0-9a-f]{12})", "delete_account", True),
+    ("POST", r"/api/accounts/([0-9a-f]{12})/verify", "verify_account", True),
     ("POST", r"/api/scan", "scan", True),
     ("GET", r"/api/alerts", "alerts_status", True),
     ("POST", r"/api/alerts", "alerts_enable", True),
@@ -161,6 +162,8 @@ def account_public_view(item):
     }
     view["regions"] = list(item.get("regions") or [])
     view["host_account"] = bool(item.get("host_account"))
+    # Accounts saved before verification existed have no flag and count as verified.
+    view["verified"] = item.get("verified", True) is not False
     if item.get("role_arn"):
         view["role_arn"] = item["role_arn"]
         view["external_id"] = item.get("external_id")
