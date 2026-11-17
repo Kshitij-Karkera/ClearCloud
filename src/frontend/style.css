@@ -1177,3 +1177,25 @@ textarea {
         animation-duration: 2s;
     }
 }
+
+.chip.warn {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.verify-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    margin-top: 10px;
+}
+
+.verify-row .btn.small {
+    padding: 6px 14px;
+    font-size: 13px;
+}
+
+.verify-error {
+    color: #b42318;
+}

@@ -196,7 +196,13 @@ function renderAccounts(accounts) {
     top.appendChild(name);
 
     const right = el("span", "name");
-    right.appendChild(statusChip(account.last_status));
+    if (account.verified === false) {
+      const warn = el("span", "chip", "Not verified");
+      warn.classList.add("warn");
+      right.appendChild(warn);
+    } else {
+      right.appendChild(statusChip(account.last_status));
+    }
     if (!config.demo) {
       const del = el("button", "link danger", "Remove");
       del.type = "button";
@@ -222,6 +228,29 @@ function renderAccounts(accounts) {
     if (account.role_arn) {
       wrap.appendChild(el("div", "meta", "Role: " + account.role_arn));
       wrap.appendChild(el("div", "meta", "External ID (add to the role's trust policy): " + account.external_id));
+      if (account.verified === false) {
+        wrap.appendChild(el("div", "meta", "Replace PASTE-EXTERNAL-ID-HERE in the role's trust policy with the External ID above. Then press Verify. ClearCloud will not scan this account until it is verified."));
+        const row = el("div", "verify-row");
+        const btn = el("button", "btn primary small", "Verify");
+        btn.type = "button";
+        const msg = el("span", "hint");
+        btn.addEventListener("click", async () => {
+          btn.disabled = true;
+          msg.className = "hint";
+          msg.textContent = "Checking the role...";
+          try {
+            await api("/api/accounts/" + account.account_id + "/verify", { method: "POST" });
+            await refreshAll();
+          } catch (err) {
+            msg.className = "hint verify-error";
+            msg.textContent = err.message;
+            btn.disabled = false;
+          }
+        });
+        row.appendChild(btn);
+        row.appendChild(msg);
+        wrap.appendChild(row);
+      }
     } else if (account.host_account) {
       wrap.appendChild(el("div", "meta", "Scans the account that hosts ClearCloud"));
     }
@@ -653,7 +682,7 @@ function wireApp() {
       ["acc-label", "acc-regions", "acc-role", "az-tenant", "az-client", "az-secret", "az-sub", "acc-gcp"]
         .forEach(id => { $(id).value = ""; });
       const extra = result.account.external_id
-        ? " Add this External ID to the role's trust policy: " + result.account.external_id
+        ? " It is not verified yet. Add this External ID to the role's trust policy, then press Verify on the account card: " + result.account.external_id
         : "";
       setMessage("acc-msg", "Account connected." + extra, "ok");
       refreshAll();
