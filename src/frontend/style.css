@@ -872,39 +872,80 @@ textarea {
     }
 }
 
+/* Tablet: collapse the sidebar into an icon rail. */
+@media (min-width: 761px) and (max-width: 1000px) {
+    .shell {
+        grid-template-columns: 72px 1fr;
+    }
+
+    .sidebar {
+        padding: 18px 8px;
+        align-items: center;
+    }
+
+    .brand {
+        font-size: 0;
+        padding: 0 0 18px;
+        justify-content: center;
+    }
+
+    .nav {
+        position: relative;
+        justify-content: center;
+        padding: 12px 0;
+    }
+
+    .nav span {
+        display: none;
+    }
+
+    .nav .pill {
+        display: block;
+        position: absolute;
+        top: 2px;
+        right: 6px;
+        margin: 0;
+        font-size: 10px;
+        padding: 0 6px;
+    }
+
+    .userbar {
+        align-items: center;
+        padding: 12px 0 0;
+        width: 100%;
+    }
+
+    .userbar span {
+        display: none;
+    }
+
+    .userbar .link {
+        align-self: center;
+        font-size: 12px;
+    }
+}
+
+/* Phone: slim header on top, tab bar at the bottom. */
 @media (max-width: 760px) {
     .shell {
         grid-template-columns: 1fr;
     }
 
     .sidebar {
-        position: static;
+        position: sticky;
+        top: 0;
+        z-index: 40;
         height: auto;
         flex-direction: row;
         align-items: center;
-        flex-wrap: wrap;
-        padding: 12px 14px;
-        gap: 8px;
+        justify-content: space-between;
+        padding: 10px 16px;
+        gap: 12px;
     }
 
     .brand {
-        padding: 0 8px 0 0;
-    }
-
-    nav {
-        flex-direction: row;
-        flex: 1;
-        overflow-x: auto;
-    }
-
-    .nav {
-        width: auto;
-        padding: 8px 10px;
-        white-space: nowrap;
-    }
-
-    .nav svg {
-        display: none;
+        padding: 0;
+        font-size: 17px;
     }
 
     .userbar {
@@ -913,16 +954,88 @@ textarea {
         border: 0;
         flex-direction: row;
         align-items: center;
-        width: 100%;
-        justify-content: space-between;
+        gap: 14px;
+        width: auto;
+        min-width: 0;
+    }
+
+    .userbar span {
+        max-width: 150px;
+    }
+
+    .userbar .link {
+        align-self: center;
+        white-space: nowrap;
+    }
+
+    nav {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 50;
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 0;
+        background: var(--side);
+        border-top: 1px solid rgba(255, 255, 255, .12);
+        padding: 6px 6px calc(6px + env(safe-area-inset-bottom));
+    }
+
+    .nav {
+        position: relative;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        gap: 3px;
+        width: auto;
+        padding: 7px 2px;
+        font-size: 11.5px;
+        text-align: center;
+        white-space: nowrap;
+    }
+
+    .nav svg {
+        display: block;
+        width: 22px;
+        height: 22px;
+    }
+
+    .nav .pill {
+        position: absolute;
+        top: 1px;
+        left: calc(50% + 6px);
+        margin: 0;
+        font-size: 10px;
+        padding: 0 6px;
     }
 
     .topbar {
-        padding: 16px 16px 10px;
+        padding: 16px 16px 8px;
+        align-items: flex-start;
+    }
+
+    .topbar h1 {
+        font-size: 22px;
+    }
+
+    .actions {
+        width: 100%;
+        flex-direction: column-reverse;
+        align-items: stretch;
+        gap: 8px;
+    }
+
+    .actions .btn {
+        width: 100%;
+    }
+
+    .msg:empty {
+        display: none;
     }
 
     main {
-        padding: 4px 16px 40px;
+        padding: 4px 16px 96px;
     }
 
     #notes {
@@ -931,6 +1044,11 @@ textarea {
 
     .row {
         grid-template-columns: 1fr;
+    }
+
+    .account .top {
+        flex-wrap: wrap;
+        row-gap: 8px;
     }
 
     .auth-view {
@@ -947,6 +1065,12 @@ textarea {
 
     .bar-row {
         grid-template-columns: 110px 1fr 64px;
+    }
+}
+
+@media (max-width: 520px) {
+    .userbar span {
+        display: none;
     }
 }
 
