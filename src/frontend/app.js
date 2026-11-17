@@ -168,9 +168,13 @@ function wireAuth() {
 
 function statusChip(status) {
   const text = status || "never scanned";
+  if (/^error/i.test(text)) {
+    const bad = el("span", "chip", "Scan failed");
+    bad.classList.add("bad");
+    return bad;
+  }
   const chip = el("span", "chip", text.split(" (")[0]);
   if (/^ok/i.test(text)) chip.classList.add("ok");
-  else if (/error|fail|denied/i.test(text)) chip.classList.add("bad");
   return chip;
 }
 
@@ -211,6 +215,9 @@ function renderAccounts(accounts) {
 
     const when = account.last_scan_at ? "Last scan " + new Date(account.last_scan_at).toLocaleString() : "Not scanned yet";
     wrap.appendChild(el("div", "meta", when));
+    if (/^error/i.test(account.last_status || "")) {
+      wrap.appendChild(el("div", "acc-error", account.last_status.replace(/^error:\s*/i, "")));
+    }
     if (account.role_arn) {
       wrap.appendChild(el("div", "meta", "Role: " + account.role_arn));
       wrap.appendChild(el("div", "meta", "External ID (add to the role's trust policy): " + account.external_id));
