@@ -320,6 +320,9 @@ class FakeTable:
             raise err
         self.items[key] = dict(Item)
 
+    def delete_item(self, Key):
+        self.items.pop((Key["pk"], Key["sk"]), None)
+
     def update_item(self, Key, UpdateExpression, ExpressionAttributeValues=None, ReturnValues=None):
         item = self.items[(Key["pk"], Key["sk"])]
         if UpdateExpression.startswith("ADD fails"):
@@ -343,6 +346,45 @@ class FakeSns:
     def publish_batch(self, TopicArn, PublishBatchRequestEntries):
         self.batches.append((TopicArn, PublishBatchRequestEntries))
         return {"Failed": self.failed}
+
+    # --- alert subscriptions ---
+    subscriptions = None
+
+    def _subs(self):
+        if self.subscriptions is None:
+            self.subscriptions = []
+        return self.subscriptions
+
+    def subscribe(self, TopicArn, Protocol, Endpoint, Attributes, ReturnSubscriptionArn):
+        for sub in self._subs():
+            if sub["Endpoint"] == Endpoint and sub["Attributes"] != Attributes:
+                err = Exception("exists with different attributes")
+                err.response = {"Error": {"Code": "InvalidParameter"}}
+                raise err
+        self._subs().append({
+            "Endpoint": Endpoint, "Protocol": Protocol, "Attributes": Attributes,
+            "SubscriptionArn": "PendingConfirmation", "TopicArn": TopicArn,
+        })
+        return {"SubscriptionArn": "pending confirmation"}
+
+    def confirm(self, endpoint):
+        for sub in self._subs():
+            if sub["Endpoint"] == endpoint:
+                sub["SubscriptionArn"] = "arn:aws:sns:us-east-2:1:alerts:" + endpoint
+
+    def list_subscriptions_by_topic(self, TopicArn, NextToken=None):
+        return {"Subscriptions": [
+            {"Endpoint": x["Endpoint"], "Protocol": x["Protocol"], "SubscriptionArn": x["SubscriptionArn"]}
+            for x in self._subs()]}
+
+    def get_subscription_attributes(self, SubscriptionArn):
+        for sub in self._subs():
+            if sub["SubscriptionArn"] == SubscriptionArn:
+                return {"Attributes": dict(sub["Attributes"])}
+        return {"Attributes": {}}
+
+    def unsubscribe(self, SubscriptionArn):
+        self.subscriptions = [x for x in self._subs() if x["SubscriptionArn"] != SubscriptionArn]
 
 
 def call(method, path, body=None, token=None):
@@ -452,6 +494,59 @@ class ApiFlowTest(unittest.TestCase):
         finally:
             api_app.OPEN_HOST_SCAN = old
         self.assertEqual(status, 201)
+
+    def _alerts_on(self):
+        api_app.ALERT_TOPIC_ARN = "arn:aws:sns:us-east-2:1:alerts"
+
+    def test_alerts_off_by_default_then_pending_then_on_then_off(self):
+        self._alerts_on()
+        _, body = self.register()
+        token = body["token"]
+        self.assertEqual(call("GET", "/api/alerts", token=token)[1]["state"], "off")
+        status, data = call("POST", "/api/alerts", {}, token)
+        self.assertEqual((status, data["state"]), (202, "pending"))
+        sub = auth.verify_token(token, os.environ["JWT_SECRET"])["sub"]
+        policy = json.loads(self.sns.subscriptions[0]["Attributes"]["FilterPolicy"])
+        self.assertEqual(policy, {"owner": [sub]})
+        self.assertEqual(call("GET", "/api/alerts", token=token)[1]["state"], "pending")
+        self.sns.confirm("me@example.com")
+        self.assertEqual(call("GET", "/api/alerts", token=token)[1]["state"], "on")
+        status, data = call("DELETE", "/api/alerts", token=token)
+        self.assertEqual((status, data["state"]), (200, "off"))
+        self.assertEqual(self.sns.subscriptions, [])
+        self.assertEqual(call("GET", "/api/alerts", token=token)[1]["state"], "off")
+
+    def test_turning_alerts_on_twice_does_not_subscribe_twice(self):
+        self._alerts_on()
+        _, body = self.register()
+        call("POST", "/api/alerts", {}, body["token"])
+        status, data = call("POST", "/api/alerts", {}, body["token"])
+        self.assertEqual((status, data["state"]), (200, "pending"))
+        self.assertEqual(len(self.sns.subscriptions), 1)
+
+    def test_other_users_subscription_is_not_mine(self):
+        self._alerts_on()
+        _, first = self.register("a@example.com")
+        _, second = self.register("b@example.com")
+        call("POST", "/api/alerts", {}, first["token"])
+        self.sns.confirm("a@example.com")
+        self.assertEqual(call("GET", "/api/alerts", token=first["token"])[1]["state"], "on")
+        self.assertEqual(call("GET", "/api/alerts", token=second["token"])[1]["state"], "off")
+
+    def test_email_that_already_gets_every_alert_is_refused_clearly(self):
+        self._alerts_on()
+        self.sns.subscriptions = [{
+            "Endpoint": "me@example.com", "Protocol": "email", "Attributes": {},
+            "SubscriptionArn": "arn:aws:sns:us-east-2:1:alerts:op", "TopicArn": "t"}]
+        _, body = self.register()
+        status, data = call("POST", "/api/alerts", {}, body["token"])
+        self.assertEqual(status, 409)
+        self.assertIn("every ClearCloud alert", data["error"])
+
+    def test_alert_routes_need_sign_in(self):
+        self._alerts_on()
+        self.assertEqual(call("GET", "/api/alerts")[0], 401)
+        self.assertEqual(call("POST", "/api/alerts", {})[0], 401)
 
 
 if __name__ == "__main__":
