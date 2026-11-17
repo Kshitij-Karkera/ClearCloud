@@ -229,6 +229,50 @@ function renderAccounts(accounts) {
   });
 }
 
+/* ---------- AWS connect help ---------- */
+
+function fillAwsHelp() {
+  const arn = config.trusted_role_arn || "";
+  const principal = arn || (config.demo ? "arn:aws:iam::123456789012:role/clearcloud-LambdaRole-EXAMPLE" : "ARN-OF-THE-CLEARCLOUD-ROLE");
+  const trust = {
+    Version: "2012-10-17",
+    Statement: [{
+      Effect: "Allow",
+      Principal: { AWS: principal },
+      Action: "sts:AssumeRole",
+      Condition: { StringEquals: { "sts:ExternalId": "PASTE-EXTERNAL-ID-HERE" } }
+    }]
+  };
+  const perms = {
+    Version: "2012-10-17",
+    Statement: [{
+      Effect: "Allow",
+      Action: ["ec2:Describe*", "cloudwatch:GetMetricStatistics", "ce:GetCostAndUsage"],
+      Resource: "*"
+    }]
+  };
+  $("aws-trust").textContent = JSON.stringify(trust, null, 2);
+  $("aws-perms").textContent = JSON.stringify(perms, null, 2);
+  $("aws-help-missing").hidden = Boolean(arn) || Boolean(config.demo);
+  document.querySelectorAll("[data-copy]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const text = $(btn.dataset.copy).textContent;
+      try {
+        await navigator.clipboard.writeText(text);
+        btn.textContent = "Copied";
+      } catch (e) {
+        const range = document.createRange();
+        range.selectNodeContents($(btn.dataset.copy));
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        btn.textContent = "Selected, press Ctrl+C";
+      }
+      setTimeout(() => { btn.textContent = "Copy"; }, 2000);
+    });
+  });
+}
+
 /* ---------- email alerts ---------- */
 
 let alertState = "off";
@@ -600,6 +644,7 @@ async function start() {
   wireAuth();
   wireNav();
   wireAlerts();
+  fillAwsHelp();
   wireFindings();
   wireApp();
 

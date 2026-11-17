@@ -418,6 +418,56 @@ textarea {
     margin-bottom: 0;
 }
 
+.help {
+    margin: 4px 0 14px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: #f8fafc;
+    padding: 10px 14px;
+}
+
+.help summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--primary);
+}
+
+.help .steps {
+    margin: 10px 0 12px;
+    padding-left: 20px;
+    font-size: 13.5px;
+    line-height: 1.5;
+}
+
+.help .steps li {
+    margin-bottom: 6px;
+}
+
+.help>.hint:last-child {
+    margin-top: 10px;
+}
+
+.codehead {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 10px;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.help pre {
+    margin: 6px 0 0;
+    padding: 10px 12px;
+    background: #0f172a;
+    color: #e2e8f0;
+    border-radius: 8px;
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-x: auto;
+    max-width: 100%;
+}
+
 .alerts {
     display: flex;
     justify-content: space-between;

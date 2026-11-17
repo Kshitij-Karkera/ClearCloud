@@ -226,7 +226,28 @@
                 <label>Role ARN <input id="acc-role"
                     placeholder="arn:aws:iam::123456789012:role/ClearCloudReadOnly"></label>
                 <p class="hint">A read-only role in your AWS account that ClearCloud can assume. Leave empty to scan the
-                  account hosting ClearCloud (admins only).</p>
+                  account hosting ClearCloud, if the site owner allows it.</p>
+                <details class="help" id="aws-help">
+                  <summary>How to connect your own AWS account</summary>
+                  <ol class="steps">
+                    <li>In your AWS account, open IAM, choose Roles and then Create role. Pick Custom trust policy and
+                      paste the trust policy below. Keep the placeholder for now.</li>
+                    <li>Attach the permissions policy below to the role, and name the role ClearCloudReadOnly.</li>
+                    <li>Copy the role's ARN into the Role ARN box above and press Connect account.</li>
+                    <li>Copy the External ID shown on the new account card. Then edit the role's trust policy and
+                      replace PASTE-EXTERNAL-ID-HERE with it.</li>
+                    <li>Press Scan now.</li>
+                  </ol>
+                  <p id="aws-help-missing" class="hint" hidden>The ClearCloud role ARN is not published on this site
+                    yet. Ask the site owner for it and put it in the trust policy.</p>
+                  <div class="codehead"><span>Trust policy</span><button type="button" class="link"
+                      data-copy="aws-trust">Copy</button></div>
+                  <pre id="aws-trust"></pre>
+                  <div class="codehead"><span>Permissions policy (read-only)</span><button type="button" class="link"
+                      data-copy="aws-perms">Copy</button></div>
+                  <pre id="aws-perms"></pre>
+                  <p class="hint">ClearCloud only reads. This role cannot change or delete anything in your account.</p>
+                </details>
               </div>
 
               <div data-for="azure" hidden>
