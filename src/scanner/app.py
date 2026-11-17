@@ -5,6 +5,7 @@ import traceback
 
 import alerts
 import cc_session
+import friendly
 import reporting
 import rules
 from providers import aws as aws_provider
@@ -58,7 +59,8 @@ def collect_for_account(account, now):
                 _merge(inventory, aws_provider.collect(
                     region, now, CPU_LOOKBACK_DAYS, session))
             except Exception as exc:
-                errors.append(f"{region}: {type(exc).__name__}: {exc}")
+                print(f"scan failed in {region}: {type(exc).__name__}: {exc}")
+                errors.append(f"{region}: {friendly.explain(exc)}")
         spend, ce_status = aws_provider.collect_spend(now, session)
     elif provider == "azure":
         from providers import azure as azure_provider
@@ -116,7 +118,8 @@ def process(message, now):
     try:
         inventory, spend, ce_status, errors = collect_for_account(account, now)
     except Exception as exc:
-        _record_status(key, now, f"error: {type(exc).__name__}: {exc}")
+        print(f"scan failed for {key['sk']}: {type(exc).__name__}: {exc}")
+        _record_status(key, now, "error: " + friendly.explain(exc))
         return
     if errors and not any(inventory.values()):
         _record_status(key, now, "error: " + "; ".join(errors))
