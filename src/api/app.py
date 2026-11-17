@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import api_logic as logic
 import auth
 import cc_session
+import verify
 
 TABLE_NAME = os.environ.get("TABLE_NAME", "")
 TOPIC_ARN = os.environ.get("TOPIC_ARN", "")
@@ -19,6 +20,8 @@ ALERT_TOPIC_ARN = os.environ.get("ALERT_TOPIC_ARN", "")
 ALERT_PENDING_SECONDS = 48 * 3600
 ALERT_RESEND_SECONDS = 600
 JWT_SECRET = os.environ.get("JWT_SECRET", "")
+# Open sign-up needs a brake: at most this many new accounts per clock hour, in total.
+MAX_SIGNUPS_PER_HOUR = int(os.environ.get("MAX_SIGNUPS_PER_HOUR", "60"))
 ADMIN_EMAILS = {
     e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()
 }
@@ -40,6 +43,12 @@ def _sns():
     if "sns" not in _clients:
         _clients["sns"] = cc_session.client("sns")
     return _clients["sns"]
+
+
+def _sts():
+    if "sts" not in _clients:
+        _clients["sts"] = cc_session.client("sts")
+    return _clients["sts"]
 
 
 def _ssm():
@@ -118,6 +127,21 @@ def _issue_token(profile):
     return auth.sign_token(claims, _secret())
 
 
+def _count_signup():
+    now = int(time.time())
+    key = {"pk": "LIMIT#signups", "sk": "HOUR#" +
+           time.strftime("%Y%m%d%H", time.gmtime(now))}
+    resp = _table().update_item(
+        Key=key,
+        UpdateExpression="ADD n :one SET expires_at = :ttl",
+        ExpressionAttributeValues={":one": 1, ":ttl": now + 7200},
+        ReturnValues="UPDATED_NEW",
+    )
+    if int(resp["Attributes"]["n"]) > MAX_SIGNUPS_PER_HOUR:
+        raise logic.ApiError(
+            429, "Too many new accounts were created in the last hour. Please try again later.")
+
+
 def register(body):
     try:
         email = auth.normalize_email(body.get("email"))
@@ -125,6 +149,7 @@ def register(body):
     except auth.AuthError as err:
         raise logic.ApiError(400, str(err))
     _secret()
+    _count_signup()
     profile = {
         "pk": f"AUTH#{email}",
         "sk": "PROFILE",
@@ -188,12 +213,54 @@ def list_accounts(user):
     return 200, {"accounts": [logic.account_public_view(i) for i in items]}
 
 
+def _verify_cloud_credentials(cleaned):
+    try:
+        if cleaned["provider"] == "azure":
+            verify.check_azure(cleaned["credentials"])
+        else:
+            verify.check_gcp(cleaned["credentials"])
+    except verify.VerifyError as err:
+        raise logic.ApiError(err.status, err.message)
+
+
+def verify_account(user, account_id):
+    key = {"pk": f"USER#{user['sub']}", "sk": f"ACCOUNT#{account_id}"}
+    item = _table().get_item(Key=key).get("Item")
+    if not item:
+        raise logic.ApiError(404, "Account not found")
+    if item.get("provider") != "aws" or not item.get("role_arn"):
+        raise logic.ApiError(
+            400, "Only AWS accounts connected with a role need verifying")
+    try:
+        _sts().assume_role(
+            RoleArn=item["role_arn"],
+            RoleSessionName="clearcloud-verify",
+            DurationSeconds=900,
+            ExternalId=item.get("external_id") or "",
+        )
+    except Exception as exc:
+        code = getattr(exc, "response", {}).get("Error", {}).get("Code")
+        print(f"verify failed for {account_id}: {type(exc).__name__}: {code}")
+        raise logic.ApiError(400, verify.assume_role_problem(code))
+    _table().update_item(
+        Key=key,
+        UpdateExpression="SET verified = :v, last_status = :s",
+        ExpressionAttributeValues={":v": True,
+                                   ":s": "verified, not scanned yet"},
+    )
+    item.update(verified=True, last_status="verified, not scanned yet")
+    return 200, {"account": logic.account_public_view(item)}
+
+
 def create_account(user, body):
     cleaned = logic.validate_account(body, user["is_admin"] or OPEN_HOST_SCAN)
     pk = f"USER#{user['sub']}"
     if len(_query(pk, "ACCOUNT#")) >= logic.MAX_ACCOUNTS:
         raise logic.ApiError(
             409, f"You can connect up to {logic.MAX_ACCOUNTS} accounts")
+
+    if cleaned["provider"] in ("azure", "gcp"):
+        _verify_cloud_credentials(cleaned)
 
     account_id = uuid.uuid4().hex[:12]
     item = {
@@ -205,6 +272,7 @@ def create_account(user, body):
         "label": cleaned["label"],
         "created_at": datetime.now(timezone.utc).isoformat(),
         "last_status": "never scanned",
+        "verified": True,
     }
     secret_name = None
     if cleaned["provider"] == "aws":
@@ -212,6 +280,8 @@ def create_account(user, body):
         if cleaned["role_arn"]:
             item["role_arn"] = cleaned["role_arn"]
             item["external_id"] = secrets.token_hex(16)
+            item["verified"] = False
+            item["last_status"] = "waiting for verification"
         else:
             item["host_account"] = True
     else:
@@ -393,6 +463,8 @@ def lambda_handler(event, context):
                 status, body = create_account(user, _body(event))
             elif name == "delete_account":
                 status, body = delete_account(user, params[0])
+            elif name == "verify_account":
+                status, body = verify_account(user, params[0])
             elif name == "alerts_status":
                 status, body = alerts_status(user)
             elif name == "alerts_enable":
