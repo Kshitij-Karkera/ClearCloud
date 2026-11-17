@@ -101,8 +101,10 @@ def _send_alert(account, previous_item, findings, summary):
         if not fresh:
             return
         subject, body = alerts.build_alert(account, fresh, summary)
+        owner = str(account.get("pk", "")).split("#", 1)[-1]
         cc_session.client("sns").publish(
-            TopicArn=ALERT_TOPIC_ARN, Subject=subject, Message=body)
+            TopicArn=ALERT_TOPIC_ARN, Subject=subject, Message=body,
+            MessageAttributes={"owner": {"DataType": "String", "StringValue": owner}})
         print(
             f"alert sent: {len(fresh)} new findings for {account.get('account_id')}")
     except Exception:

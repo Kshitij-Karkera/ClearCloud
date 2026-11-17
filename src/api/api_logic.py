@@ -8,7 +8,8 @@ SCAN_COOLDOWN_SECONDS = 60
 MAX_BODY_CHARS = 30000
 
 REGION_RE = re.compile(r"^[a-z]{2}(-[a-z]+)+-\d$")
-ROLE_ARN_RE = re.compile(r"^arn:aws:iam::\d{12}:role/[A-Za-z0-9+=,.@_/-]{1,512}$")
+ROLE_ARN_RE = re.compile(
+    r"^arn:aws:iam::\d{12}:role/[A-Za-z0-9+=,.@_/-]{1,512}$")
 GUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
@@ -25,7 +26,26 @@ ROUTES = (
     ("POST", r"/api/accounts", "create_account", True),
     ("DELETE", r"/api/accounts/([0-9a-f]{12})", "delete_account", True),
     ("POST", r"/api/scan", "scan", True),
+    ("GET", r"/api/alerts", "alerts_status", True),
+    ("POST", r"/api/alerts", "alerts_enable", True),
+    ("DELETE", r"/api/alerts", "alerts_disable", True),
 )
+
+
+def alert_filter_policy(sub):
+    """SNS filter policy that lets one user's email subscription see only that user's alerts."""
+    return json.dumps({"owner": [sub]})
+
+
+def alert_policy_owner(policy_text):
+    """The user id a filter policy was written for, or None if it is not one of ours."""
+    try:
+        owners = (json.loads(policy_text) or {}).get("owner")
+    except (TypeError, ValueError):
+        return None
+    if isinstance(owners, list) and len(owners) == 1 and isinstance(owners[0], str):
+        return owners[0]
+    return None
 
 
 class ApiError(Exception):
@@ -87,8 +107,10 @@ def _validate_aws(body, is_admin):
 def _validate_azure(body):
     raw = body.get("credentials")
     if not isinstance(raw, dict):
-        raise ApiError(400, "credentials must be an object with the Azure service principal fields")
-    creds = {field: _text(raw.get(field), field, 300) for field in AZURE_FIELDS}
+        raise ApiError(
+            400, "credentials must be an object with the Azure service principal fields")
+    creds = {field: _text(raw.get(field), field, 300)
+             for field in AZURE_FIELDS}
     for field in AZURE_GUID_FIELDS:
         if not GUID_RE.match(creds[field]):
             raise ApiError(400, f"{field} must be a GUID")
@@ -101,7 +123,8 @@ def _validate_gcp(body):
         try:
             raw = json.loads(raw)
         except ValueError:
-            raise ApiError(400, "credentials must be valid service account key JSON")
+            raise ApiError(
+                400, "credentials must be valid service account key JSON")
     if not isinstance(raw, dict):
         raise ApiError(400, "credentials must be service account key JSON")
     for key in GCP_REQUIRED:
@@ -120,7 +143,8 @@ def validate_account(body, is_admin):
     provider = _text(body.get("provider"), "provider").lower()
     if provider not in PROVIDERS:
         raise ApiError(400, "provider must be aws, azure or gcp")
-    cleaned = {"provider": provider, "label": _text(body.get("label"), "label", 60)}
+    cleaned = {"provider": provider, "label": _text(
+        body.get("label"), "label", 60)}
     if provider == "aws":
         cleaned.update(_validate_aws(body, is_admin))
     elif provider == "azure":
@@ -160,7 +184,8 @@ def summarize_findings(findings):
     by_provider = {}
     for f in findings:
         by_type[f["type"]] = by_type.get(f["type"], 0) + 1
-        entry = by_provider.setdefault(f["provider"], {"count": 0, "est_monthly_savings": 0.0})
+        entry = by_provider.setdefault(
+            f["provider"], {"count": 0, "est_monthly_savings": 0.0})
         entry["count"] += 1
         entry["est_monthly_savings"] = round(
             entry["est_monthly_savings"] + f["est_monthly_savings"], 2
@@ -192,7 +217,8 @@ def merge_reports(report_items):
     for item in report_items:
         findings.extend(json.loads(item.get("findings_json", "[]")))
         for row in json.loads(item.get("spend_json", "[]")):
-            spend[row["service"]] = round(spend.get(row["service"], 0.0) + row["cost"], 2)
+            spend[row["service"]] = round(
+                spend.get(row["service"], 0.0) + row["cost"], 2)
         label = item.get("account_label", "account")
         for message in json.loads(item.get("errors_json", "[]")):
             errors.append(f"{label}: {message}")

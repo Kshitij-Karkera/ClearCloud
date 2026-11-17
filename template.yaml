@@ -125,6 +125,16 @@ Resources:
                 Resource:
                   - !Ref ScanTopic
                   - !Ref AlertTopic
+              - Sid: AlertSubscriptions
+                Effect: Allow
+                Action:
+                  - sns:Subscribe
+                  - sns:ListSubscriptionsByTopic
+                  - sns:GetSubscriptionAttributes
+                  - sns:Unsubscribe
+                Resource:
+                  - !Ref AlertTopic
+                  - !Sub ${AlertTopic}:*
               - Sid: CloudSecrets
                 Effect: Allow
                 Action:
@@ -172,6 +182,7 @@ Resources:
         Variables:
           TABLE_NAME: !Ref Table
           TOPIC_ARN: !Ref ScanTopic
+          ALERT_TOPIC_ARN: !Ref AlertTopic
           JWT_SECRET: !Ref JwtSecret
           ADMIN_EMAILS: !Ref AdminEmails
           OPEN_HOST_SCAN: !Ref OpenHostScan

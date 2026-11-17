@@ -14,6 +14,10 @@ import cc_session
 
 TABLE_NAME = os.environ.get("TABLE_NAME", "")
 TOPIC_ARN = os.environ.get("TOPIC_ARN", "")
+ALERT_TOPIC_ARN = os.environ.get("ALERT_TOPIC_ARN", "")
+# SNS drops an email subscription that is still unconfirmed after 48 hours.
+ALERT_PENDING_SECONDS = 48 * 3600
+ALERT_RESEND_SECONDS = 600
 JWT_SECRET = os.environ.get("JWT_SECRET", "")
 ADMIN_EMAILS = {
     e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()
@@ -280,6 +284,95 @@ def request_scan(user):
     return 202, {"queued": len(due), "skipped": len(accounts) - len(due)}
 
 
+def _require_alert_topic():
+    if not ALERT_TOPIC_ARN:
+        raise logic.ApiError(500, "Email alerts are not configured")
+
+
+def _alert_key(user):
+    return {"pk": f"USER#{user['sub']}", "sk": "ALERTS"}
+
+
+def _confirmed_alert_subscription(user):
+    """ARN of this user's confirmed, filtered email subscription, or None."""
+    token = None
+    for _ in range(10):
+        kwargs = {"TopicArn": ALERT_TOPIC_ARN}
+        if token:
+            kwargs["NextToken"] = token
+        resp = _sns().list_subscriptions_by_topic(**kwargs)
+        for sub in resp.get("Subscriptions", []):
+            arn = sub.get("SubscriptionArn", "")
+            if sub.get("Protocol") != "email" or not arn.startswith("arn:"):
+                continue
+            if sub.get("Endpoint", "").lower() != user["email"].lower():
+                continue
+            attrs = _sns().get_subscription_attributes(
+                SubscriptionArn=arn).get("Attributes", {})
+            if logic.alert_policy_owner(attrs.get("FilterPolicy")) == user["sub"]:
+                return arn
+        token = resp.get("NextToken")
+        if not token:
+            break
+    return None
+
+
+def _alert_state(user):
+    """Return (state, requested_at) where state is on, pending or off."""
+    if _confirmed_alert_subscription(user):
+        return "on", None
+    item = _table().get_item(Key=_alert_key(user)).get("Item")
+    if item:
+        requested = datetime.fromisoformat(item["requested_at"])
+        if (datetime.now(timezone.utc) - requested).total_seconds() < ALERT_PENDING_SECONDS:
+            return "pending", requested
+    return "off", None
+
+
+def alerts_status(user):
+    _require_alert_topic()
+    state, _ = _alert_state(user)
+    return 200, {"state": state, "email": user["email"]}
+
+
+def alerts_enable(user):
+    _require_alert_topic()
+    state, requested = _alert_state(user)
+    now = datetime.now(timezone.utc)
+    if state == "on":
+        return 200, {"state": "on", "email": user["email"]}
+    if state == "pending" and (now - requested).total_seconds() < ALERT_RESEND_SECONDS:
+        return 200, {"state": "pending", "email": user["email"]}
+    try:
+        _sns().subscribe(
+            TopicArn=ALERT_TOPIC_ARN,
+            Protocol="email",
+            Endpoint=user["email"],
+            Attributes={
+                "FilterPolicy": logic.alert_filter_policy(user["sub"])},
+            ReturnSubscriptionArn=True,
+        )
+    except Exception as exc:
+        code = getattr(exc, "response", {}).get("Error", {}).get("Code")
+        if code == "InvalidParameter":
+            raise logic.ApiError(
+                409, "This email address already receives every ClearCloud alert, so it cannot be set up per user.")
+        raise
+    item = dict(_alert_key(user))
+    item.update({"email": user["email"], "requested_at": now.isoformat()})
+    _table().put_item(Item=item)
+    return 202, {"state": "pending", "email": user["email"]}
+
+
+def alerts_disable(user):
+    _require_alert_topic()
+    arn = _confirmed_alert_subscription(user)
+    if arn:
+        _sns().unsubscribe(SubscriptionArn=arn)
+    _table().delete_item(Key=_alert_key(user))
+    return 200, {"state": "off", "email": user["email"]}
+
+
 def lambda_handler(event, context):
     try:
         http = (event.get("requestContext") or {}).get("http") or {}
@@ -300,6 +393,12 @@ def lambda_handler(event, context):
                 status, body = create_account(user, _body(event))
             elif name == "delete_account":
                 status, body = delete_account(user, params[0])
+            elif name == "alerts_status":
+                status, body = alerts_status(user)
+            elif name == "alerts_enable":
+                status, body = alerts_enable(user)
+            elif name == "alerts_disable":
+                status, body = alerts_disable(user)
             else:
                 status, body = request_scan(user)
         return _response(status, body)
