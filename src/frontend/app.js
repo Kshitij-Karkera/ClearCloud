@@ -231,6 +231,30 @@ function renderAccounts(accounts) {
 
 /* ---------- AWS connect help ---------- */
 
+const GUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+// Checks the connect form before sending it, so people get a plain explanation of what to fix.
+function accountProblem(provider, payload) {
+  if (!payload.label) return "Give the account a name, so you can tell it apart later.";
+  if (provider === "aws") {
+    const role = payload.role_arn;
+    if (role && !/^arn:aws:iam::\d{12}:role\/.+/.test(role)) {
+      return "That does not look like a role ARN. It should look like arn:aws:iam::123456789012:role/ClearCloudReadOnly. You can copy it from the role's page in IAM.";
+    }
+  } else if (provider === "azure") {
+    const c = payload.credentials;
+    const guids = [["Tenant ID", c.tenant_id], ["Subscription ID", c.subscription_id], ["Client (app) ID", c.client_id]];
+    for (const [name, value] of guids) {
+      if (!value) return name + " is empty. You can find it in the Azure portal under your app registration.";
+      if (!GUID.test(value)) return name + " should look like 11111111-2222-3333-4444-555555555555. Check that you copied the whole value.";
+    }
+    if (!c.client_secret) return "Client secret is empty. Create one under Certificates & secrets on the app registration and paste its value.";
+  } else if (!String(payload.credentials || "").trim()) {
+    return "Paste the contents of your service account key file. It is a JSON file that starts with {.";
+  }
+  return "";
+}
+
 function fillAwsHelp() {
   const arn = config.trusted_role_arn || "";
   const principal = arn || (config.demo ? "arn:aws:iam::123456789012:role/clearcloud-LambdaRole-EXAMPLE" : "ARN-OF-THE-CLEARCLOUD-ROLE");
@@ -617,6 +641,11 @@ function wireApp() {
       };
     } else {
       payload.credentials = $("acc-gcp").value;
+    }
+    const problem = accountProblem(provider, payload);
+    if (problem) {
+      setMessage("acc-msg", problem, "error");
+      return;
     }
     setMessage("acc-msg", "Connecting...");
     try {
