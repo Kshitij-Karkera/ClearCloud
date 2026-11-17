@@ -17,7 +17,13 @@ STAGING="$(mktemp -d)"
 trap 'rm -rf "$STAGING"' EXIT
 
 cp "$ROOT"/src/frontend/index.html "$ROOT"/src/frontend/style.css "$ROOT"/src/frontend/app.js "$STAGING"/
-printf '{}\n' > "$STAGING/config.json"
+# The role ClearCloud runs as is shown on the Connect form so users can trust it from their own account.
+ROLE_ARN="$(aws lambda get-function-configuration --function-name clearcloud-scanner \
+  --query Role --output text 2>/dev/null || true)"
+case "$ROLE_ARN" in
+  arn:aws:iam::*) printf '{"trusted_role_arn": "%s"}\n' "$ROLE_ARN" > "$STAGING/config.json" ;;
+  *) printf '{}\n' > "$STAGING/config.json" ;;
+esac
 
 aws s3 sync "$STAGING" "s3://$BUCKET" --delete
 aws cloudfront create-invalidation --distribution-id "$DISTRIBUTION" --paths "/*" > /dev/null
