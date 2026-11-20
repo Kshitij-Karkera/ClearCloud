@@ -15,7 +15,9 @@ Cloud waste is easy to create and hard to see. An engineer forgets a disk after 
 - Shows everything in one dashboard, tagged by cloud and account.
 - Supports many users, each with their own connected accounts and private results.
 - Scans every night and on demand ("Scan now").
-- Emails an alert when a scan finds waste that was not in the previous report.
+- Emails each user an alert when a scan finds waste that was not in the previous report. Alerts are per user: people turn them on from the Accounts page and only hear about their own accounts.
+- Checks accounts before using them: Azure and GCP credentials are tested when they are connected, and an AWS role must pass a **Verify** step before it is scanned.
+- Walks users through connecting their own AWS account, with the trust and permissions policies ready to copy.
 - Is **read-only**: it reports waste and never changes or deletes anything.
 
 ## Architecture
@@ -62,7 +64,7 @@ CloudFront (CDN, HTTPS)
 | DynamoDB | Users, accounts, reports and history in one multi-tenant table, with a sparse index for listing all accounts and TTL for history |
 | SNS | Fan-out: one message per account triggers one scanner invocation, with automatic retries |
 | EventBridge | Nightly schedule |
-| SNS (alerts topic) | Emails the user when a scan finds new waste, and notifies on alarms |
+| SNS (alerts topic) | Emails each user about new waste in their own accounts (one filtered email subscription per user), and notifies the operator on alarms |
 | CloudWatch | Monitoring dashboard for the three Lambdas, plus optional alarms |
 | SSM Parameter Store | Per-account Azure and GCP credentials as encrypted SecureString parameters |
 | STS | Optional cross-account role assumption for scanning other AWS accounts |
@@ -88,15 +90,15 @@ clearcloud/
 |-- template.yaml                 # the whole AWS stack (SAM)
 |-- local_demo.py                 # run the UI locally with simulated data
 |-- scripts/deploy_backend.sh     # builds and deploys the stack
-|-- scripts/deploy_frontend.sh    # publishes the site and its config to S3 / CloudFront
+|-- scripts/deploy_frontend.sh    # publishes the site and its config (including the ClearCloud role ARN) to S3 / CloudFront
 |-- docs/DEPLOYMENT.md            # step-by-step deployment guide
 |-- src/
-|   |-- api/                      # API Lambda: sign-in, accounts, report, scan
+|   |-- api/                      # API Lambda: sign-in, accounts, verification, alerts, report, scan
 |   |-- dispatcher/               # nightly fan-out to SNS
 |   |-- scanner/                  # SNS-triggered worker, rule engine, cloud collectors
 |   |   `-- providers/            # aws.py, azure.py, gcp.py
 |   `-- frontend/                 # single-page app (sign-in, dashboard)
-`-- tests/                        # unit tests (backend, rules, alerts)
+`-- tests/                        # unit tests (backend, verification, rules, alerts)
 ```
 
 ## Getting started
@@ -109,9 +111,10 @@ python local_demo.py
 
 Then open http://localhost:8000. The page is labelled "Demo mode", because all of its data is made up.
 
-Run the tests:
+Run the tests (they need a few packages installed first):
 
 ```bash
+pip install boto3 google-auth requests cryptography
 python -m unittest discover tests
 ```
 
@@ -122,15 +125,17 @@ To deploy to AWS, see **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
 - **Authentication.** Passwords are hashed with PBKDF2-SHA256 (200,000 iterations, random salt) and never stored or returned. Sign-in issues an HMAC-signed token that expires after 12 hours, and every API route except sign-up and sign-in rejects a missing, tampered or expired token. Five wrong passwords lock the account for five minutes, and a wrong email and a wrong password give the same error.
 - **Tenant isolation.** Every database key is built from the user ID in the verified token, never from client input, so one user cannot read or delete another's data.
 - **Credentials.** Azure and GCP keys go straight into encrypted SSM parameters. The API never returns them, and removing an account deletes its parameter.
-- **Host account protection.** Scanning the AWS account that hosts ClearCloud is limited to emails listed in the `AdminEmails` stack parameter. Other users must connect their own account through a role.
+- **Host account protection.** Scanning the AWS account that hosts ClearCloud is limited to emails listed in the `AdminEmails` stack parameter. Other users must connect their own account through a role. For a class demo, deploying with `OPEN_HOST_SCAN=true` lets every signed-in user scan the host account instead. Leave it off for real use.
 - **Confused-deputy protection.** Cross-account AWS access uses a per-account External ID.
+- **Account verification.** A role-based AWS account is not scanned until the user presses Verify and ClearCloud can assume the role with the account's External ID. Azure and GCP credentials are tested with the provider when they are connected, and rejected credentials are never stored.
 - **Input validation.** Account requests are validated for provider, region, ARN and credential formats, and for size.
-- **Abuse limits.** There is a cap on connected accounts per user and a cooldown between scans.
+- **Abuse limits.** There is a cap on connected accounts per user, a cooldown between scans, and a limit of 60 new sign-ups per hour across the whole site (set with the `MAX_SIGNUPS_PER_HOUR` environment variable).
 - **Private storage.** The S3 bucket blocks public access and is readable only by CloudFront.
 
 ## Status and limitations
 
-- **Azure and GCP collectors are new.** They are covered by unit tests using fake SDK objects, but have not yet been run against live accounts. Expect small SDK adjustments on first use.
+- **Azure and GCP are unit-tested only.** The collectors and the connect-time credential checks are covered by unit tests with fake SDK objects and mocked responses, but have not been run against live Azure or GCP accounts. Expect small adjustments on first use.
+- **Cross-account AWS scanning is untested live.** The Verify step and the role flow are covered by unit tests with a fake STS client. The trust policy uses the ClearCloud Lambda role's ARN, which changes if the stack is deleted and created again, so connected accounts then need their trust policy updated.
 - **Cost Explorer may be unavailable** in restricted sandboxes. When it is, spend charts show "unavailable" and findings still work.
 - **Spend charts are AWS-only.** Azure and GCP currently report waste findings, not billing.
 - **Savings are estimates** from built-in approximate US on-demand price tables. They rank findings and are not billing-accurate.
@@ -145,8 +150,8 @@ To deploy to AWS, see **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
 ## Monitoring and alerts
 
 - A CloudWatch dashboard `<stack>-monitoring` shows invocations, errors, scanner duration and scanner concurrency.
-- When a scan finds waste that the previous report did not have, the scanner publishes one email to the `AlertTopic` SNS topic. The first scan of an account counts everything as new. A failed alert never fails the scan.
-- Pass an alert email as the 4th argument of `deploy_backend.sh` and confirm the AWS subscription email.
+- **Per-user alerts.** On the Accounts page a signed-in user turns on email alerts. ClearCloud creates an SNS email subscription for that user with a filter on their user ID, AWS sends a confirmation email, and from then on the user gets an email only when a scan of one of their own accounts finds waste that was not in the previous report. The first scan of an account counts everything as new. A failed alert never fails the scan.
+- **Operator copy.** The email passed as the 4th argument of `deploy_backend.sh` is subscribed without a filter, so it receives every alert and every alarm. A person cannot use that same address for their own alerts.
 - CloudWatch alarms (errors on each Lambda, scanner near timeout) are created only with `ENABLE_ALARMS=true`, because some student sandboxes deny alarm creation.
 
 ## Roadmap
